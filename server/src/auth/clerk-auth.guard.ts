@@ -42,39 +42,28 @@ export class ClerkAuthGuard implements CanActivate {
 			throw new UnauthorizedException("Access credentials are invalid");
 		}
 
-		try {
-			const claims = await verifyToken(token, {
-				secretKey: this.configService.getOrThrow("clerk.secretKey", {
-					infer: true,
-				}),
-				jwtKey: this.configService.get("clerk.jwtKey", { infer: true }),
-				authorizedParties: this.getAuthorizedParties(),
-			});
+		const secretKey = this.configService.getOrThrow("clerk.secretKey", {
+			infer: true,
+		});
+		const jwtKey = this.configService.get("clerk.jwtKey", { infer: true });
+		const claims = await this.verifyRequestToken(token, secretKey, jwtKey);
+		const userId = claims.sub;
 
-			const userId = claims.sub;
-
-			if (!userId) {
-				throw new UnauthorizedException(
-					"Access credentials are invalid"
-				);
-			}
-
-			request.auth = this.createAuthObject(token, claims);
-
-			return true;
-		} catch {
+		if (!userId) {
 			throw new UnauthorizedException("Access credentials are invalid");
 		}
+
+		request.auth = this.createAuthObject(claims);
+
+		return true;
 	}
 
 	private createAuthObject(
-		token: string,
 		claims: Awaited<ReturnType<typeof verifyToken>>
 	): ClerkAuth {
 		const orgId = this.getStringClaim(claims, "org_id");
 
 		return {
-			token,
 			userId: claims.sub,
 			sessionId: claims.sid,
 			orgId,
@@ -83,13 +72,53 @@ export class ClerkAuthGuard implements CanActivate {
 	}
 
 	private extractBearerToken(request: Request): string | null {
-		const [scheme, token] = request.headers.authorization?.split(" ") ?? [];
+		const authorization = request.headers.authorization;
 
-		if (scheme !== "Bearer" || !token) {
+		if (!authorization) {
 			return null;
 		}
 
-		return token;
+		const trimmed = authorization.trim();
+
+		if (!trimmed) {
+			return null;
+		}
+
+		const [scheme, ...rest] = trimmed.split(/\s+/);
+
+		if (!scheme || rest.length === 0) {
+			return null;
+		}
+
+		if (scheme.toLowerCase() !== "bearer") {
+			return null;
+		}
+
+		const token = rest.join(" ");
+
+		return token || null;
+	}
+
+	private async verifyRequestToken(
+		token: string,
+		secretKey: string,
+		jwtKey?: string
+	): Promise<Awaited<ReturnType<typeof verifyToken>>> {
+		try {
+			return await verifyToken(token, {
+				secretKey,
+				jwtKey,
+				authorizedParties: this.getAuthorizedParties(),
+			});
+		} catch (error) {
+			if (this.isAuthenticationFailure(error)) {
+				throw new UnauthorizedException(
+					"Access credentials are invalid"
+				);
+			}
+
+			throw error;
+		}
 	}
 
 	private getAuthorizedParties(): string[] | undefined {
@@ -114,5 +143,16 @@ export class ClerkAuthGuard implements CanActivate {
 		const value = (claims as Record<string, unknown>)[key];
 
 		return typeof value === "string" ? value : null;
+	}
+
+	private isAuthenticationFailure(error: unknown): error is Error & {
+		reason: string;
+	} {
+		return (
+			error instanceof SyntaxError ||
+			(error instanceof Error &&
+				"reason" in error &&
+				typeof error.reason === "string")
+		);
 	}
 }

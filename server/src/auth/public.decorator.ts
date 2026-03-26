@@ -8,7 +8,6 @@ import type { Request } from "express";
 export const IS_PUBLIC_KEY = "isPublic";
 
 export interface ClerkAuth {
-	token: string;
 	userId: string;
 	sessionId?: string;
 	orgId: string | null;
