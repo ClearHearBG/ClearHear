@@ -39,6 +39,7 @@ export class ClerkAuthGuard implements CanActivate {
 		const request = context
 			.switchToHttp()
 			.getRequest<AuthenticatedRequest>();
+
 		const token = this.extractBearerToken(request);
 
 		if (!token) {
@@ -50,8 +51,11 @@ export class ClerkAuthGuard implements CanActivate {
 		const secretKey = this.configService.getOrThrow("clerk.secretKey", {
 			infer: true,
 		});
+
 		const jwtKey = this.configService.get("clerk.jwtKey", { infer: true });
+
 		const claims = await this.verifyRequestToken(token, secretKey, jwtKey);
+
 		const userId = claims.sub;
 
 		if (!userId) {
@@ -103,7 +107,7 @@ export class ClerkAuthGuard implements CanActivate {
 
 		const token = rest.join(" ");
 
-		return token || null;
+		return token ?? null;
 	}
 
 	private async verifyRequestToken(

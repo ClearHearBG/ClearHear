@@ -32,7 +32,6 @@ async function bootstrap() {
 			},
 			"bearer"
 		)
-		.addSecurityRequirements("bearer")
 		.addServer("/")
 		.build();
 
