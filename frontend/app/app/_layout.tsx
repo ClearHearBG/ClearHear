@@ -1,42 +1,55 @@
-import { DarkTheme, DefaultTheme, ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
+import { ThemeProvider } from '@react-navigation/native';
+import { Manrope_400Regular, Manrope_500Medium, Manrope_600SemiBold, Manrope_700Bold } from '@expo-google-fonts/manrope';
+import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import React, { useEffect } from 'react';
 import 'react-native-reanimated';
 
-import { ThemeProvider, useTheme } from '../context/ThemeContext';
-import { AudioProvider } from '../context/AudioContext';
+import { AppProvider, useAppState } from '@/src/state/AppProvider';
 
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
+void SplashScreen.preventAutoHideAsync();
 
 function RootNavigator() {
-  const { isDark } = useTheme();
+  const { navigationTheme, theme } = useAppState();
 
   return (
-    <NavigationThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={navigationTheme}>
       <Stack
         screenOptions={{
           headerShown: false,
-        }}
-      >
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="modal"
-          options={{ presentation: 'modal', title: 'Modal' }}
-        />
+          animation: 'fade',
+          contentStyle: { backgroundColor: theme.background },
+        }}>
+        <Stack.Screen name="index" />
       </Stack>
-      <StatusBar style={isDark ? 'light' : 'dark'} />
-    </NavigationThemeProvider>
+      <StatusBar style={theme.statusBar} />
+    </ThemeProvider>
   );
 }
 
 export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    Manrope_400Regular,
+    Manrope_500Medium,
+    Manrope_600SemiBold,
+    Manrope_700Bold,
+  });
+
+  useEffect(() => {
+    if (fontsLoaded) {
+      void SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded]);
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
   return (
-    <ThemeProvider>
-      <AudioProvider>
-        <RootNavigator />
-      </AudioProvider>
-    </ThemeProvider>
+    <AppProvider>
+      <RootNavigator />
+    </AppProvider>
   );
 }
