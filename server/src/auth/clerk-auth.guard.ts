@@ -18,6 +18,9 @@ import type { EnvironmentVariables } from "../config/configuration";
 
 @Injectable()
 export class ClerkAuthGuard implements CanActivate {
+	private static readonly UNAUTHORIZED_MESSAGE =
+		"Access credentials are invalid";
+
 	constructor(
 		private readonly reflector: Reflector,
 		private readonly configService: ConfigService<EnvironmentVariables>
@@ -39,7 +42,9 @@ export class ClerkAuthGuard implements CanActivate {
 		const token = this.extractBearerToken(request);
 
 		if (!token) {
-			throw new UnauthorizedException("Access credentials are invalid");
+			throw new UnauthorizedException(
+				ClerkAuthGuard.UNAUTHORIZED_MESSAGE
+			);
 		}
 
 		const secretKey = this.configService.getOrThrow("clerk.secretKey", {
@@ -50,7 +55,9 @@ export class ClerkAuthGuard implements CanActivate {
 		const userId = claims.sub;
 
 		if (!userId) {
-			throw new UnauthorizedException("Access credentials are invalid");
+			throw new UnauthorizedException(
+				ClerkAuthGuard.UNAUTHORIZED_MESSAGE
+			);
 		}
 
 		request.auth = this.createAuthObject(claims);
@@ -113,7 +120,7 @@ export class ClerkAuthGuard implements CanActivate {
 		} catch (error) {
 			if (this.isAuthenticationFailure(error)) {
 				throw new UnauthorizedException(
-					"Access credentials are invalid"
+					ClerkAuthGuard.UNAUTHORIZED_MESSAGE
 				);
 			}
 
