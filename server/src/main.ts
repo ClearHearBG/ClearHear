@@ -23,6 +23,15 @@ async function bootstrap() {
 	const config = new DocumentBuilder()
 		.setTitle("ClearHear API")
 		.setVersion("1.0")
+		.addBearerAuth(
+			{
+				type: "http",
+				scheme: "bearer",
+				bearerFormat: "JWT",
+				description: "Clerk session token",
+			},
+			"bearer"
+		)
 		.addServer("/")
 		.build();
 
