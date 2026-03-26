@@ -1,42 +1,64 @@
-import { DarkTheme, DefaultTheme, ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
+import React from 'react';
+import { ClerkProvider, useAuth } from '@clerk/clerk-expo';
 import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import 'react-native-reanimated';
+import * as SecureStore from 'expo-secure-store';
 
-import { ThemeProvider, useTheme } from '../context/ThemeContext';
+import { ThemeProvider } from '../context/ThemeContext';
 import { AudioProvider } from '../context/AudioContext';
 
-export const unstable_settings = {
-  anchor: '(tabs)',
+const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY!;
+
+const tokenCache = {
+  async getToken(key: string) {
+    try {
+      return await SecureStore.getItemAsync(key);
+    } catch {
+      return null;
+    }
+  },
+  async saveToken(key: string, value: string) {
+    try {
+      await SecureStore.setItemAsync(key, value);
+    } catch {}
+  },
 };
 
 function RootNavigator() {
-  const { isDark } = useTheme();
+  const { isSignedIn, isLoaded } = useAuth();
+
+  if (!isLoaded) return null;
 
   return (
-    <NavigationThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
-      <Stack
-        screenOptions={{
-          headerShown: false,
-        }}
-      >
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="modal"
-          options={{ presentation: 'modal', title: 'Modal' }}
-        />
-      </Stack>
-      <StatusBar style={isDark ? 'light' : 'dark'} />
-    </NavigationThemeProvider>
+    <Stack screenOptions={{ headerShown: false }}>
+      {isSignedIn ? (
+        <>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="sign-in" redirect />
+          <Stack.Screen name="sign-up" redirect />
+        </>
+      ) : (
+        <>
+          <Stack.Screen name="sign-in" />
+          <Stack.Screen name="sign-up" />
+          <Stack.Screen name="(tabs)" redirect />
+        </>
+      )}
+    </Stack>
   );
 }
 
 export default function RootLayout() {
+  if (!publishableKey) {
+    throw new Error('Missing EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY');
+  }
+
   return (
-    <ThemeProvider>
-      <AudioProvider>
-        <RootNavigator />
-      </AudioProvider>
-    </ThemeProvider>
+    <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
+      <ThemeProvider>
+        <AudioProvider>
+          <RootNavigator />
+        </AudioProvider>
+      </ThemeProvider>
+    </ClerkProvider>
   );
 }

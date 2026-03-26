@@ -249,7 +249,7 @@ export default function AIScreen() {
       >
         <View style={styles.header}>
           <TouchableOpacity
-            onPress={() => router.replace('/(tabs)/HomeScreen')}
+            onPress={() => router.replace('/HomeScreen')}
             style={styles.backBtn}
           >
             <Text style={[styles.backIcon, { color: textColor }]}>←</Text>

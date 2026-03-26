@@ -205,7 +205,7 @@ export default function HomeScreen() {
           </View>
 
           <TouchableOpacity
-            onPress={() => router.push('/(tabs)/AIScreen')}
+            onPress={() => router.push('/AIScreen')}
             style={[styles.profileBtn, { backgroundColor: cardBg }]}
           >
             <Text style={{ fontSize: 20 }}>👤</Text>
@@ -281,7 +281,7 @@ export default function HomeScreen() {
         <View style={[styles.sectionCard, { backgroundColor: cardBg }]}>
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionTitle, { color: textColor }]}>Equalizer</Text>
-            <TouchableOpacity onPress={() => router.push('/(tabs)/AIScreen')}>
+            <TouchableOpacity onPress={() => router.push('/AIScreen')}>
               <Text style={[styles.seeAll, { color: Colors.teal }]}>Advanced →</Text>
             </TouchableOpacity>
           </View>
@@ -302,7 +302,7 @@ export default function HomeScreen() {
         <View style={styles.quickActions}>
           <TouchableOpacity
             style={[styles.actionBtn, { backgroundColor: cardBg }]}
-            onPress={() => router.push('/(tabs)/TranscriptScreen')}
+            onPress={() => router.push('/TranscriptScreen')}
           >
             <Text style={styles.actionIcon}>📝</Text>
             <Text style={[styles.actionText, { color: textColor }]}>Transcript</Text>
@@ -310,7 +310,7 @@ export default function HomeScreen() {
 
           <TouchableOpacity
             style={[styles.actionBtn, { backgroundColor: cardBg }]}
-            onPress={() => router.push('/(tabs)/AIScreen')}
+            onPress={() => router.push('/AIScreen')}
           >
             <Text style={styles.actionIcon}>🤖</Text>
             <Text style={[styles.actionText, { color: textColor }]}>AI Assistant</Text>
@@ -318,7 +318,7 @@ export default function HomeScreen() {
 
           <TouchableOpacity
             style={[styles.actionBtn, { backgroundColor: cardBg }]}
-            onPress={() => router.push('/(tabs)/ControlsScreen')}
+            onPress={() => router.push('/ControlsScreen')}
           >
             <Text style={styles.actionIcon}>🎛</Text>
             <Text style={[styles.actionText, { color: textColor }]}>Controls</Text>
