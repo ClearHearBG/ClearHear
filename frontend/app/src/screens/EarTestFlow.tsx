@@ -3,10 +3,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { HearingResultsChart } from '@/src/components/HearingResultsChart';
 import { ActionButton, Atmosphere, Pill, SurfaceCard } from '@/src/components/primitives';
-import { playRampedTone, prepareTonePlayer, stopTonePlayback } from '@/src/services/tonePlayer';
+import { RAMPED_TONE_DURATION_MS, playRampedTone, prepareTonePlayer, stopTonePlayback } from '@/src/services/tonePlayer';
 import { useAppState } from '@/src/state/AppProvider';
-import type { HearingPoint } from '@/src/types/app';
+import type { HearingPoint, HearingSummary } from '@/src/types/app';
+import { formatRange } from '@/src/utils/format';
 import {
   ANCHOR_TEST_FREQUENCY,
   buildHearingProfile,
@@ -34,7 +36,7 @@ interface EarSearchState {
   phase: SearchPhase;
 }
 
-const ATTEMPT_DURATION_MS = 2100;
+const ATTEMPT_DURATION_MS = RAMPED_TONE_DURATION_MS;
 
 function createEarSearchState(earIndex = 0): EarSearchState {
   return {
@@ -392,9 +394,11 @@ export function EarTestFlow() {
             </View>
 
             <SurfaceCard style={styles.reviewCard} theme={theme}>
-              <ReviewItem summary={describeEarSupport(draftProfile.leftSummary)} title="Left ear" theme={theme} />
-              <ReviewItem summary={describeEarSupport(draftProfile.rightSummary)} title="Right ear" theme={theme} />
+              <ReviewItem summary={draftProfile.leftSummary} title="Left ear" theme={theme} />
+              <ReviewItem summary={draftProfile.rightSummary} title="Right ear" theme={theme} />
             </SurfaceCard>
+
+            <HearingResultsChart points={draftProfile.points} theme={theme} />
 
             <ActionButton
               disabled={isSavingProfile}
@@ -513,10 +517,12 @@ function ReviewItem({
   title,
   theme,
 }: {
-  summary: string;
+  summary: HearingSummary;
   title: string;
   theme: ReturnType<typeof useAppState>['theme'];
 }) {
+  const supportText = describeEarSupport(summary);
+
   return (
     <View style={[styles.reviewItem, { backgroundColor: theme.elevated, borderColor: theme.border }]}> 
       <View style={[styles.reviewIcon, { backgroundColor: theme.card }]}> 
@@ -524,7 +530,17 @@ function ReviewItem({
       </View>
       <View style={styles.flex}>
         <Text style={[styles.reviewTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{title}</Text>
-        <Text style={[styles.reviewText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{summary}</Text>
+        <Text style={[styles.reviewText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{supportText}</Text>
+        <View style={styles.reviewMetricsRow}>
+          <View style={[styles.reviewMetric, { backgroundColor: theme.card, borderColor: theme.border }]}> 
+            <Text style={[styles.reviewMetricLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>Range</Text>
+            <Text style={[styles.reviewMetricValue, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{formatRange(summary.lowRangeHz, summary.highRangeHz)}</Text>
+          </View>
+          <View style={[styles.reviewMetric, { backgroundColor: theme.card, borderColor: theme.border }]}> 
+            <Text style={[styles.reviewMetricLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>Avg loss</Text>
+            <Text style={[styles.reviewMetricValue, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{summary.averageLossDb} dB</Text>
+          </View>
+        </View>
       </View>
     </View>
   );
@@ -754,5 +770,28 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontSize: 13,
     lineHeight: 20,
+  },
+  reviewMetricsRow: {
+    marginTop: 10,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  reviewMetric: {
+    minWidth: 112,
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 2,
+  },
+  reviewMetricLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  reviewMetricValue: {
+    fontSize: 13,
+    lineHeight: 18,
   },
 });

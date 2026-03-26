@@ -6,8 +6,10 @@ import { Buffer } from 'buffer';
 import type { EarSide } from '@/src/types/app';
 
 const SAMPLE_RATE = 44100;
-const TONE_DURATION_SECONDS = 2.1;
-const FADE_OUT_SECONDS = 0.04;
+export const RAMPED_TONE_DURATION_MS = 3200;
+
+const TONE_DURATION_SECONDS = RAMPED_TONE_DURATION_MS / 1000;
+const FADE_OUT_SECONDS = 0.06;
 
 const toneCache = new Map<string, string>();
 
