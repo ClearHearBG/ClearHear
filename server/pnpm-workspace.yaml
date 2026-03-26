@@ -1,5 +1,7 @@
 onlyBuiltDependencies:
+  - '@clerk/shared'
   - '@nestjs/core'
   - '@prisma/engines'
   - '@scarf/scarf'
   - prisma
+  - unrs-resolver
