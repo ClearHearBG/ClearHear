@@ -8,6 +8,8 @@ services:
             - POSTGRES_HOST=postgres:5432
         ports:
             - "8393:8393"
+        extra_hosts:
+            - "localhost:host-gateway"
         depends_on:
             - postgres
 
