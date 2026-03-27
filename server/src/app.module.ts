@@ -6,6 +6,7 @@ import configuration, {
 	environmentVariablesValidationSchema,
 } from "./config/configuration";
 import { PrismaModule } from "./prisma/prisma.module";
+import { ProfilesModule } from "./profiles/profiles.module";
 
 @Module({
 	imports: [
@@ -16,6 +17,7 @@ import { PrismaModule } from "./prisma/prisma.module";
 		}),
 		AuthModule,
 		PrismaModule,
+		ProfilesModule,
 	],
 })
 export class AppModule {}
