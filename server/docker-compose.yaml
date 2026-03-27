@@ -1,7 +1,6 @@
 services:
     server:
-        build:
-            context: .
+        image: ghcr.io/clearhearbg/clearhear-server:latest
         restart: always
         env_file:
             - .env
