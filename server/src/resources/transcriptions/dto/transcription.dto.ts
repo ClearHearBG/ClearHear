@@ -9,9 +9,9 @@ export class TranscriptionDto {
 	file: any;
 
 	/**
-	 * ISO-639-1 language code. Defaults to 'bg' (Bulgarian).
+	 * ISO-639-1 language code of the audio.
 	 * @example "bg"
 	 */
-	@ApiProperty({ required: false, example: "bg" })
-	language?: string;
+	@ApiProperty({ example: "bg" })
+	language: string;
 }

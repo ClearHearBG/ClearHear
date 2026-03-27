@@ -14,6 +14,22 @@ model Profile {
     /// The Clerk user ID this profile belongs to.
     clerkId String @unique
 
+    transcripts Transcript[]
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
+
+model Transcript {
+    id String @id @default(uuid())
+
+    profile   Profile @relation(fields: [profileId], references: [id])
+    profileId String
+
+    text     String
+    language String
+    duration Float?
+
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
 }

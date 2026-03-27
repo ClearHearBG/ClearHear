@@ -5,6 +5,8 @@ import Groq, { toFile } from "groq-sdk";
 import { TranscriptionEntity } from "./entities/transcription.entity";
 
 import { EnvironmentVariables } from "src/config/configuration";
+import { PrismaService } from "src/prisma/prisma.service";
+import { ProfilesService } from "src/profiles/profiles.service";
 
 // Field names are per the OpenAI Whisper API specification:
 // https://developers.openai.com/api/reference/resources/audio
@@ -50,7 +52,9 @@ export class TranscriptionsService {
 	private readonly groq: Groq;
 
 	constructor(
-		private readonly configService: ConfigService<EnvironmentVariables>
+		private readonly configService: ConfigService<EnvironmentVariables>,
+		private readonly prisma: PrismaService,
+		private readonly profilesService: ProfilesService
 	) {
 		this.groq = new Groq({
 			apiKey: this.configService.getOrThrow("groqApiKey", {
@@ -61,7 +65,8 @@ export class TranscriptionsService {
 
 	async transcribe(
 		file: Express.Multer.File,
-		language = "bg"
+		clerkId: string,
+		language: string
 	): Promise<TranscriptionEntity> {
 		const result = (await this.groq.audio.transcriptions.create({
 			file: await toFile(file.buffer, file.originalname, {
@@ -100,6 +105,50 @@ export class TranscriptionsService {
 			.join("")
 			.trim();
 
-		return { text: text || result.text };
+		const profile = await this.profilesService.findOrCreate(clerkId);
+
+		const transcript = await this.prisma.transcript.create({
+			data: {
+				profileId: profile.id,
+				text: text || result.text,
+				language,
+				duration: result.duration ?? null,
+			},
+		});
+
+		return TranscriptionEntity.fromPlain(transcript);
+	}
+
+	async findAll(clerkId: string): Promise<TranscriptionEntity[]> {
+		const profile = await this.profilesService.findByClerkId(clerkId);
+
+		const transcripts = await this.prisma.transcript.findMany({
+			where: { profileId: profile.id },
+			orderBy: { createdAt: "desc" },
+		});
+
+		return transcripts.map(transcript =>
+			TranscriptionEntity.fromPlain(transcript)
+		);
+	}
+
+	async findOne(id: string, clerkId: string): Promise<TranscriptionEntity> {
+		const profile = await this.profilesService.findByClerkId(clerkId);
+
+		const transcript = await this.prisma.transcript.findUniqueOrThrow({
+			where: { id, profileId: profile.id },
+		});
+
+		return TranscriptionEntity.fromPlain(transcript);
+	}
+
+	async remove(id: string, clerkId: string): Promise<TranscriptionEntity> {
+		const profile = await this.profilesService.findByClerkId(clerkId);
+
+		const transcript = await this.prisma.transcript.delete({
+			where: { id, profileId: profile.id },
+		});
+
+		return TranscriptionEntity.fromPlain(transcript);
 	}
 }
