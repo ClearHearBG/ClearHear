@@ -174,4 +174,12 @@ export class TranscriptionsService {
 
 		return TranscriptionEntity.fromPlain(transcript);
 	}
+
+	async removeAll(clerkId: string): Promise<void> {
+		const profile = await this.profilesService.findByClerkId(clerkId);
+
+		await this.prisma.transcript.deleteMany({
+			where: { profileId: profile.id },
+		});
+	}
 }

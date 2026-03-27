@@ -3,6 +3,7 @@ import {
 	Controller,
 	Delete,
 	Get,
+	HttpCode,
 	HttpStatus,
 	Param,
 	ParseFilePipeBuilder,
@@ -89,5 +90,15 @@ export class TranscriptionsController {
 		@Auth() auth: ClerkAuth
 	): Promise<TranscriptionEntity> {
 		return this.transcriptionsService.remove(id, auth.userId);
+	}
+
+	/**
+	 * Deletes all transcripts for the authenticated user.
+	 */
+	@Delete()
+	@HttpCode(HttpStatus.NO_CONTENT)
+	@ApiDelete({ type: undefined, successResponse: HttpStatus.NO_CONTENT })
+	async removeAll(@Auth() auth: ClerkAuth): Promise<void> {
+		return this.transcriptionsService.removeAll(auth.userId);
 	}
 }
