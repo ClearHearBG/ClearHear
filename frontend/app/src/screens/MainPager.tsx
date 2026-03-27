@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BottomBar } from '@/src/components/BottomBar';
-import { ActionButton, AnimatedEntrance, Atmosphere, Pill, SurfaceCard } from '@/src/components/primitives';
+import { ActionButton, AnimatedEntrance, Atmosphere, DetailRow, Pill, SurfaceCard } from '@/src/components/primitives';
 import { useAppState } from '@/src/state/AppProvider';
 import { formatRelative, formatTime } from '@/src/utils/format';
 
@@ -77,8 +77,38 @@ export function MainPager() {
 }
 
 function HomePage() {
-  const { preferences, theme, toggleDeviceEnabled } = useAppState();
-  const isOn = preferences.isDeviceEnabled;
+  const { hearingSupportStatus, preferences, theme, toggleDeviceEnabled } = useAppState();
+  const isRequested = preferences.isDeviceEnabled;
+  const isRunning = hearingSupportStatus.stage === 'running';
+  const statusTitle = !isRequested
+    ? 'Off'
+    : hearingSupportStatus.stage === 'running'
+      ? 'On'
+      : hearingSupportStatus.stage === 'starting'
+        ? 'Starting'
+        : 'Check route';
+  const statusDescription = !isRequested
+    ? 'Hearing support is paused. Tap the circle to turn it on.'
+    : hearingSupportStatus.stage === 'running'
+      ? `Live amplification is running through ${hearingSupportStatus.selectedInput?.name ?? 'your headset'}.`
+      : hearingSupportStatus.lastError ?? 'Connect headphones or earbuds with a microphone to start live support.';
+  const routePill = isRunning ? 'Live' : hearingSupportStatus.stage === 'starting' ? 'Starting' : isRequested ? 'Needs route' : 'Paused';
+  const captureValue = !isRequested
+    ? 'Off'
+    : hearingSupportStatus.inputMode === 'stereo'
+      ? 'Stereo microphone pair'
+      : 'Shared headset mic';
+  const outputValue = !isRequested
+    ? 'Inactive'
+    : hearingSupportStatus.selectedOutput?.name ?? 'Communication route';
+  const sampleRateValue = hearingSupportStatus.sampleRate ? `${(hearingSupportStatus.sampleRate / 1000).toFixed(1)} kHz` : 'Pending';
+  const routeNote = !isRequested
+    ? 'When enabled, ClearHear prefers stereo headset microphones and falls back to a shared headset mic when that is all the device exposes.'
+    : hearingSupportStatus.stage === 'running'
+      ? hearingSupportStatus.inputMode === 'stereo'
+        ? 'Stereo capture is active, so left and right ear amplification can be applied independently.'
+        : 'Your headset exposes one shared microphone, so ClearHear captures that input once and applies separate left and right playback boosts.'
+      : hearingSupportStatus.lastError ?? 'Connect a headset microphone and turn support back on to resume live amplification.';
 
   return (
     <View style={[styles.pageContent, styles.homePageContent]}>
@@ -92,23 +122,41 @@ function HomePage() {
       <AnimatedEntrance delay={60} style={styles.homeCenterWrap}>
         <View style={styles.homeCenter}>
           <Pressable
-            accessibilityLabel={isOn ? 'Turn hearing support off' : 'Turn hearing support on'}
+            accessibilityLabel={isRequested ? 'Turn hearing support off' : 'Turn hearing support on'}
             accessibilityRole="button"
             onPress={() => {
               void toggleDeviceEnabled();
             }}
-            style={({ pressed }) => [styles.statusButton, { opacity: pressed ? 0.9 : 1 }]}>
-            <View style={[styles.statusHalo, { backgroundColor: isOn ? theme.accentSoft : theme.elevated }]}> 
-              <View style={[styles.statusCore, { backgroundColor: isOn ? theme.accent : theme.textMuted }]}> 
-                <MaterialCommunityIcons color="#FFFFFF" name={isOn ? 'power' : 'power-off'} size={38} />
+            style={({ pressed }) => [styles.statusButton, { opacity: pressed ? 0.9 : 1 }]}> 
+            <View style={[styles.statusHalo, { backgroundColor: isRequested ? theme.accentSoft : theme.elevated }]}> 
+              <View style={[styles.statusCore, { backgroundColor: isRunning ? theme.accent : isRequested ? theme.secondary : theme.textMuted }]}> 
+                <MaterialCommunityIcons color="#FFFFFF" name={isRequested ? 'power' : 'power-off'} size={38} />
               </View>
             </View>
           </Pressable>
-          <Text style={[styles.statusText, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>{isOn ? 'On' : 'Off'}</Text>
+          <Text style={[styles.statusText, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>{statusTitle}</Text>
           <Text style={[styles.statusSubtext, { color: theme.textMuted, fontFamily: theme.fonts.body }]}> 
-            {isOn ? 'Hearing support is active. Tap the circle to pause it.' : 'Hearing support is paused. Tap the circle to turn it on.'}
+            {statusDescription}
           </Text>
         </View>
+      </AnimatedEntrance>
+
+      <AnimatedEntrance delay={120}>
+        <SurfaceCard style={styles.liveSupportCard} theme={theme}>
+          <View style={styles.liveSupportHeader}>
+            <Pill accent={isRequested} label={routePill} theme={theme} />
+            <Text style={[styles.liveSupportTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>Headset route</Text>
+          </View>
+
+          <View style={styles.liveSupportDetails}>
+            <DetailRow label="Input" theme={theme} value={hearingSupportStatus.selectedInput?.name ?? 'No headset mic'} />
+            <DetailRow label="Capture" theme={theme} value={captureValue} />
+            <DetailRow label="Output" theme={theme} value={outputValue} />
+            <DetailRow label="Sample rate" theme={theme} value={sampleRateValue} />
+          </View>
+
+          <Text style={[styles.liveSupportNote, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{routeNote}</Text>
+        </SurfaceCard>
       </AnimatedEntrance>
     </View>
   );
@@ -445,6 +493,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 16,
     paddingBottom: 12,
+  },
+  liveSupportCard: {
+    gap: 14,
+  },
+  liveSupportHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  liveSupportTitle: {
+    flex: 1,
+    textAlign: 'right',
+    fontSize: 15,
+    lineHeight: 20,
+  },
+  liveSupportDetails: {
+    gap: 10,
+  },
+  liveSupportNote: {
+    fontSize: 13,
+    lineHeight: 20,
   },
   statusButton: {
     borderRadius: 999,

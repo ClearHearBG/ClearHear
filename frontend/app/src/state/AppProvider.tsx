@@ -1,5 +1,15 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
+import type { HearingSupportStatus } from '@/modules/ble-audio';
+import {
+  INITIAL_HEARING_SUPPORT_STATUS,
+  addHearingSupportStatusListener,
+  getHearingSupportStatusAsync,
+  hasHearingSupportPermissionAsync,
+  requestHearingSupportPermissionAsync,
+  startHearingSupportAsync,
+  stopHearingSupportAsync,
+} from '@/src/services/hearingSupport';
 import { mockApi } from '@/src/services/mockApi';
 import { loadPersistedState, savePersistedState } from '@/src/services/storage';
 import { createNavigationTheme, themes } from '@/src/theme/theme';
@@ -26,6 +36,10 @@ function normalizeThemeMode(mode: string | undefined | null): ThemeMode {
   return 'light';
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Live hearing support could not start.';
+}
+
 interface AppContextValue {
   isReady: boolean;
   session: UserSession | null;
@@ -33,6 +47,7 @@ interface AppContextValue {
   theme: (typeof themes)[ThemeMode];
   navigationTheme: ReturnType<typeof createNavigationTheme>;
   hearingProfile: HearingProfile | null;
+  hearingSupportStatus: HearingSupportStatus;
   canCancelEarTest: boolean;
   transcripts: TranscriptRecord[];
   assistantMessages: AssistantMessage[];
@@ -68,7 +83,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isAskingAssistant, setIsAskingAssistant] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [hearingSupportStatus, setHearingSupportStatus] = useState<HearingSupportStatus>(INITIAL_HEARING_SUPPORT_STATUS);
   const hasHydrated = useRef(false);
+
+  useEffect(() => {
+    const subscription = addHearingSupportStatusListener((status) => {
+      setHearingSupportStatus(status);
+    });
+
+    void getHearingSupportStatusAsync().then(setHearingSupportStatus);
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -134,6 +162,70 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setPreferences(savedPreferences);
   };
 
+  const syncHearingSupport = useCallback(
+    async ({
+      enabled = preferences.isDeviceEnabled,
+      profile = hearingProfile,
+      promptForPermission = false,
+    }: {
+      enabled?: boolean;
+      profile?: HearingProfile | null;
+      promptForPermission?: boolean;
+    } = {}) => {
+      if (!session || !enabled || !profile) {
+        const nextStatus = await stopHearingSupportAsync();
+        setHearingSupportStatus(nextStatus);
+        return nextStatus;
+      }
+
+      const hasPermission = promptForPermission
+        ? await requestHearingSupportPermissionAsync()
+        : await hasHearingSupportPermissionAsync();
+
+      if (!hasPermission) {
+        const nextStatus = {
+          ...(await getHearingSupportStatusAsync()),
+          lastError: 'Microphone permission is required to run live hearing support.',
+          running: false,
+          stage: 'error' as const,
+        };
+        setHearingSupportStatus(nextStatus);
+        return nextStatus;
+      }
+
+      setHearingSupportStatus((current) => ({
+        ...current,
+        lastError: null,
+        running: true,
+        stage: 'starting',
+      }));
+
+      try {
+        const nextStatus = await startHearingSupportAsync(profile);
+        setHearingSupportStatus(nextStatus);
+        return nextStatus;
+      } catch (error) {
+        const nextStatus = {
+          ...(await getHearingSupportStatusAsync()),
+          lastError: getErrorMessage(error),
+          running: false,
+          stage: 'error' as const,
+        };
+        setHearingSupportStatus(nextStatus);
+        return nextStatus;
+      }
+    },
+    [hearingProfile, preferences.isDeviceEnabled, session],
+  );
+
+  useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+
+    void syncHearingSupport();
+  }, [hearingProfile, isReady, preferences.isDeviceEnabled, session, syncHearingSupport]);
+
   const signIn = async (name: string, email: string) => {
     setIsAuthenticating(true);
     try {
@@ -150,6 +242,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
+    const nextStatus = await stopHearingSupportAsync();
+    setHearingSupportStatus(nextStatus);
     await mockApi.logout();
     setSession(null);
     setHearingProfile(null);
@@ -160,9 +254,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const toggleDeviceEnabled = async () => {
+    if (!preferences.isDeviceEnabled) {
+      const hasPermission = await requestHearingSupportPermissionAsync();
+      if (!hasPermission) {
+        setHearingSupportStatus((current) => ({
+          ...current,
+          lastError: 'Microphone permission is required to run live hearing support.',
+          running: false,
+          stage: 'error',
+        }));
+        return;
+      }
+
+      await updatePreferences((current) => ({
+        ...current,
+        isDeviceEnabled: true,
+      }));
+      return;
+    }
+
     await updatePreferences((current) => ({
       ...current,
-      isDeviceEnabled: !current.isDeviceEnabled,
+      isDeviceEnabled: false,
     }));
   };
 
@@ -231,6 +344,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setIsSavingProfile(true);
     try {
       const savedProfile = await mockApi.saveHearingProfile(profile);
+
+      if (preferences.isDeviceEnabled) {
+        const hasPermission = await requestHearingSupportPermissionAsync();
+        if (!hasPermission) {
+          await updatePreferences((current) => ({
+            ...current,
+            isDeviceEnabled: false,
+          }));
+          setHearingSupportStatus((current) => ({
+            ...current,
+            lastError: 'Microphone permission is required to run live hearing support.',
+            running: false,
+            stage: 'error',
+          }));
+        }
+      }
+
       setHearingProfile(savedProfile);
       setEarTestBackup(null);
     } finally {
@@ -259,6 +389,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     theme,
     navigationTheme,
     hearingProfile,
+    hearingSupportStatus,
     canCancelEarTest: Boolean(earTestBackup),
     transcripts,
     assistantMessages,
