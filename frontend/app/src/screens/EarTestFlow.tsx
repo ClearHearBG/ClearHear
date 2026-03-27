@@ -8,103 +8,96 @@ import { ActionButton, Atmosphere, Pill, SurfaceCard } from '@/src/components/pr
 import { RAMPED_TONE_DURATION_MS, playRampedTone, prepareTonePlayer, stopTonePlayback } from '@/src/services/tonePlayer';
 import { useAppState } from '@/src/state/AppProvider';
 import type { HearingPoint, HearingSummary } from '@/src/types/app';
-import { formatRange } from '@/src/utils/format';
+import { formatFrequency, formatRange } from '@/src/utils/format';
 import {
-  ANCHOR_TEST_FREQUENCY,
+  EAR_TEST_FREQUENCIES,
+  TEST_EAR_ORDER,
   buildHearingProfile,
   createHearingPoint,
   describeEarSupport,
-  getStartingThreshold,
-  MAX_TEST_FREQUENCY,
-  MIN_TEST_FREQUENCY,
-  nextFrequencyCandidate,
-  TEST_EAR_ORDER,
-  TEST_SEARCH_ROUNDS,
+  getFrequencyVolumeProfile,
+  getThresholdAtProgress,
+  getVolumeLevelAtProgress,
 } from '@/src/utils/hearing';
 
 type EarTestStage = 'welcome' | 'guide' | 'testing' | 'review';
-type SearchPhase = 'anchor' | 'low' | 'high';
 
-interface EarSearchState {
+interface EarTestState {
   earIndex: number;
-  highMax: number;
-  highMin: number;
-  highRounds: number;
-  lowMax: number;
-  lowMin: number;
-  lowRounds: number;
-  phase: SearchPhase;
+  frequencyIndex: number;
 }
 
 const ATTEMPT_DURATION_MS = RAMPED_TONE_DURATION_MS;
+const VOLUME_METER_SEGMENTS = 8;
 
-function createEarSearchState(earIndex = 0): EarSearchState {
+function createEarTestState(earIndex = 0): EarTestState {
   return {
     earIndex,
-    highMax: MAX_TEST_FREQUENCY,
-    highMin: ANCHOR_TEST_FREQUENCY,
-    highRounds: 0,
-    lowMax: ANCHOR_TEST_FREQUENCY,
-    lowMin: MIN_TEST_FREQUENCY,
-    lowRounds: 0,
-    phase: 'anchor',
+    frequencyIndex: 0,
   };
 }
 
-function phaseTitle(phase: SearchPhase): string {
-  if (phase === 'low') {
-    return 'Lower sounds';
-  }
-
-  if (phase === 'high') {
-    return 'Higher sounds';
-  }
-
-  return 'Starting point';
-}
-
 export function EarTestFlow() {
-  const { completeEarTest, isSavingProfile, theme } = useAppState();
+  const { canCancelEarTest, cancelEarTest, completeEarTest, isSavingProfile, theme } = useAppState();
   const [stage, setStage] = useState<EarTestStage>('welcome');
   const [measurements, setMeasurements] = useState<HearingPoint[]>([]);
-  const [searchState, setSearchState] = useState<EarSearchState>(() => createEarSearchState());
+  const [testState, setTestState] = useState<EarTestState>(() => createEarTestState());
   const [isToneActive, setIsToneActive] = useState(false);
+  const [attemptProgressValue, setAttemptProgressValue] = useState(0);
   const modalOpacity = useRef(new Animated.Value(0)).current;
   const modalTranslate = useRef(new Animated.Value(20)).current;
   const playbackProgress = useRef(new Animated.Value(0)).current;
   const pulseScale = useRef(new Animated.Value(1)).current;
   const pulseOpacity = useRef(new Animated.Value(0.18)).current;
   const attemptResolved = useRef(false);
+  const attemptProgressRef = useRef(0);
+  const activeAttemptKey = useRef(0);
   const pulseLoop = useRef<Animated.CompositeAnimation | null>(null);
 
-  const currentEar = TEST_EAR_ORDER[searchState.earIndex];
-  const currentFrequency =
-    searchState.phase === 'anchor'
-      ? ANCHOR_TEST_FREQUENCY
-      : searchState.phase === 'low'
-        ? nextFrequencyCandidate(searchState.lowMin, searchState.lowMax)
-        : nextFrequencyCandidate(searchState.highMin, searchState.highMax);
-  const currentThreshold = getStartingThreshold(currentFrequency);
+  const currentEar = TEST_EAR_ORDER[testState.earIndex];
+  const currentFrequency = EAR_TEST_FREQUENCIES[testState.frequencyIndex];
+  const currentVolumeProfile = useMemo(() => getFrequencyVolumeProfile(currentFrequency), [currentFrequency]);
   const draftProfile = useMemo(
     () => (stage === 'review' ? buildHearingProfile(measurements) : null),
     [measurements, stage],
   );
-  const attemptIndex =
-    searchState.earIndex * (1 + TEST_SEARCH_ROUNDS * 2) +
-    (searchState.phase === 'anchor'
-      ? 0
-      : searchState.phase === 'low'
-        ? 1 + searchState.lowRounds
-        : 1 + TEST_SEARCH_ROUNDS + searchState.highRounds);
-  const totalAttempts = TEST_EAR_ORDER.length * (1 + TEST_SEARCH_ROUNDS * 2);
+  const attemptIndex = testState.earIndex * EAR_TEST_FREQUENCIES.length + testState.frequencyIndex;
+  const totalAttempts = TEST_EAR_ORDER.length * EAR_TEST_FREQUENCIES.length;
   const progressWidth = playbackProgress.interpolate({
     inputRange: [0, 1],
     outputRange: ['0%', '100%'],
   });
+  const volumeRingScale = playbackProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.84, 1.18],
+  });
+  const volumeRingOpacity = playbackProgress.interpolate({
+    inputRange: [0, 0.45, 1],
+    outputRange: [0.1, 0.18, 0.28],
+  });
+  const liveVolumeLevel = stage === 'testing' && isToneActive ? getVolumeLevelAtProgress(currentFrequency, attemptProgressValue) : 0;
+  const volumeMeterFill = useMemo(
+    () =>
+      Array.from({ length: VOLUME_METER_SEGMENTS }, (_, index) =>
+        Math.max(0, Math.min(1, attemptProgressValue * VOLUME_METER_SEGMENTS - index)),
+      ),
+    [attemptProgressValue],
+  );
 
   useEffect(() => {
     void prepareTonePlayer();
   }, []);
+
+  useEffect(() => {
+    const listenerId = playbackProgress.addListener(({ value }) => {
+      attemptProgressRef.current = value;
+      setAttemptProgressValue(value);
+    });
+
+    return () => {
+      playbackProgress.removeListener(listenerId);
+    };
+  }, [playbackProgress]);
 
   useEffect(() => {
     if (stage !== 'welcome' && stage !== 'guide') {
@@ -171,93 +164,59 @@ export function EarTestFlow() {
     animation.start();
   }, [pulseOpacity, pulseScale, stopPulse]);
 
-  const advanceToNextEar = useCallback(() => {
-    if (searchState.earIndex >= TEST_EAR_ORDER.length - 1) {
-      setStage('review');
+  const advanceToNextAttempt = useCallback(() => {
+    if (testState.frequencyIndex >= EAR_TEST_FREQUENCIES.length - 1) {
+      if (testState.earIndex >= TEST_EAR_ORDER.length - 1) {
+        setStage('review');
+        return;
+      }
+
+      setTestState(createEarTestState(testState.earIndex + 1));
       return;
     }
 
-    setSearchState(createEarSearchState(searchState.earIndex + 1));
-  }, [searchState.earIndex]);
+    setTestState((current) => ({
+      ...current,
+      frequencyIndex: current.frequencyIndex + 1,
+    }));
+  }, [testState.earIndex, testState.frequencyIndex]);
 
   const finishAttempt = useCallback(
     (heard: boolean) => {
+      const threshold = heard
+        ? getThresholdAtProgress(currentFrequency, attemptProgressRef.current)
+        : currentVolumeProfile.endThreshold;
+
       const point = createHearingPoint({
         ear: currentEar,
         frequency: currentFrequency,
         heard,
-        threshold: currentThreshold,
+        threshold,
       });
 
       setMeasurements((current) => [...current, point]);
-
-      if (searchState.phase === 'anchor') {
-        if (!heard) {
-          advanceToNextEar();
-          return;
-        }
-
-        setSearchState((current) => ({
-          ...current,
-          phase: 'low',
-        }));
-        return;
-      }
-
-      if (searchState.phase === 'low') {
-        const nextLowMin = heard ? searchState.lowMin : currentFrequency;
-        const nextLowMax = heard ? currentFrequency : searchState.lowMax;
-        const nextLowRounds = searchState.lowRounds + 1;
-
-        if (nextLowRounds >= TEST_SEARCH_ROUNDS) {
-          setSearchState((current) => ({
-            ...current,
-            lowMax: nextLowMax,
-            lowMin: nextLowMin,
-            lowRounds: nextLowRounds,
-            phase: 'high',
-          }));
-          return;
-        }
-
-        setSearchState((current) => ({
-          ...current,
-          lowMax: nextLowMax,
-          lowMin: nextLowMin,
-          lowRounds: nextLowRounds,
-        }));
-        return;
-      }
-
-      const nextHighMin = heard ? currentFrequency : searchState.highMin;
-      const nextHighMax = heard ? searchState.highMax : currentFrequency;
-      const nextHighRounds = searchState.highRounds + 1;
-
-      if (nextHighRounds >= TEST_SEARCH_ROUNDS) {
-        advanceToNextEar();
-        return;
-      }
-
-      setSearchState((current) => ({
-        ...current,
-        highMax: nextHighMax,
-        highMin: nextHighMin,
-        highRounds: nextHighRounds,
-      }));
+      advanceToNextAttempt();
     },
-    [advanceToNextEar, currentEar, currentFrequency, currentThreshold, searchState],
+    [advanceToNextAttempt, currentEar, currentFrequency, currentVolumeProfile.endThreshold],
   );
 
   useEffect(() => {
     if (stage !== 'testing') {
+      activeAttemptKey.current += 1;
       void stopTonePlayback();
       stopPulse();
+      attemptProgressRef.current = 0;
+      setAttemptProgressValue(0);
       playbackProgress.setValue(0);
       setIsToneActive(false);
       return;
     }
 
     attemptResolved.current = false;
+    const attemptKey = activeAttemptKey.current + 1;
+    activeAttemptKey.current = attemptKey;
+    attemptProgressRef.current = 0;
+    setAttemptProgressValue(0);
     playbackProgress.setValue(0);
     startPulse();
     setIsToneActive(true);
@@ -271,9 +230,10 @@ export function EarTestFlow() {
     void playRampedTone({
       ear: currentEar,
       frequency: currentFrequency,
-      threshold: currentThreshold,
     }).finally(() => {
-      setIsToneActive(false);
+      if (activeAttemptKey.current === attemptKey) {
+        setIsToneActive(false);
+      }
     });
 
     const timeout = setTimeout(() => {
@@ -286,14 +246,17 @@ export function EarTestFlow() {
     }, ATTEMPT_DURATION_MS);
 
     return () => {
+      activeAttemptKey.current += 1;
       clearTimeout(timeout);
       void stopTonePlayback();
       stopPulse();
       playbackProgress.stopAnimation();
+      attemptProgressRef.current = 0;
+      setAttemptProgressValue(0);
       playbackProgress.setValue(0);
       setIsToneActive(false);
     };
-  }, [currentEar, currentFrequency, currentThreshold, finishAttempt, playbackProgress, stage, startPulse, stopPulse]);
+  }, [currentEar, currentFrequency, finishAttempt, playbackProgress, stage, startPulse, stopPulse]);
 
   const handleHearTone = () => {
     if (stage !== 'testing' || attemptResolved.current) {
@@ -301,6 +264,7 @@ export function EarTestFlow() {
     }
 
     attemptResolved.current = true;
+    setIsToneActive(false);
     void stopTonePlayback();
     stopPulse();
     finishAttempt(true);
@@ -308,7 +272,9 @@ export function EarTestFlow() {
 
   const beginTest = () => {
     setMeasurements([]);
-    setSearchState(createEarSearchState());
+    setTestState(createEarTestState());
+    attemptProgressRef.current = 0;
+    setAttemptProgressValue(0);
     setStage('testing');
   };
 
@@ -320,8 +286,13 @@ export function EarTestFlow() {
     await completeEarTest(draftProfile);
   };
 
+  const handleCancelRetake = () => {
+    void stopTonePlayback();
+    cancelEarTest();
+  };
+
   return (
-    <View style={[styles.root, { backgroundColor: theme.background }]}> 
+    <View style={[styles.root, { backgroundColor: theme.background }]}>
       <Atmosphere theme={theme} />
       <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
         {(stage === 'welcome' || stage === 'guide') && <EarTestBackdrop theme={theme} />}
@@ -334,19 +305,21 @@ export function EarTestFlow() {
                   <EarTab active={currentEar === 'left'} label="Left" theme={theme} />
                   <EarTab active={currentEar === 'right'} label="Right" theme={theme} />
                 </View>
-                <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Tap when you hear the sound.</Text>
-                <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{phaseTitle(searchState.phase)}</Text>
+                <Pill accent label={formatFrequency(currentFrequency)} theme={theme} />
+                <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Tap as soon as you hear it.</Text>
+                <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>The tone starts soft and rises while we test each fixed frequency.</Text>
               </View>
 
               <View style={styles.middleWrap}>
                 <Pressable
+                  disabled={!isToneActive}
                   onPress={handleHearTone}
                   style={({ pressed }) => [
                     styles.hearButton,
                     {
                       backgroundColor: theme.card,
                       borderColor: theme.border,
-                      opacity: pressed ? 0.92 : 1,
+                      opacity: !isToneActive ? 0.72 : pressed ? 0.92 : 1,
                     },
                   ]}>
                   <Animated.View
@@ -359,26 +332,77 @@ export function EarTestFlow() {
                       },
                     ]}
                   />
-                  <View style={[styles.hearCore, { backgroundColor: theme.accent }]}> 
+                  <Animated.View
+                    style={[
+                      styles.volumeRing,
+                      {
+                        borderColor: theme.accent,
+                        opacity: volumeRingOpacity,
+                        transform: [{ scale: volumeRingScale }],
+                      },
+                    ]}
+                  />
+                  <View style={[styles.hearCore, { backgroundColor: theme.accent }]}>
                     <MaterialCommunityIcons color="#FFFFFF" name="ear-hearing" size={42} />
                     <View style={styles.sideBadge}>
                       <Text style={[styles.sideBadgeText, { color: theme.accent, fontFamily: theme.fonts.bodyBold }]}>{currentEar === 'left' ? 'L' : 'R'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.hearButtonText, { color: theme.text, fontFamily: theme.fonts.bodyBold }]}>Tap when you hear it</Text>
+                  <Text style={[styles.hearButtonText, { color: theme.text, fontFamily: theme.fonts.bodyBold }]}>Tap when audible</Text>
                 </Pressable>
               </View>
 
-              <View style={[styles.statusCard, { backgroundColor: theme.card, borderColor: theme.border }]}> 
+              <View style={[styles.statusCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
                 <View style={styles.rowBetween}>
-                  <Text style={[styles.statusLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>
-                    {isToneActive ? 'Listening now' : 'Preparing next sound'}
-                  </Text>
+                  <View style={styles.flex}>
+                    <Text style={[styles.statusLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>
+                      {isToneActive ? 'Volume rising' : 'Preparing next sound'}
+                    </Text>
+                    <Text style={[styles.statusMeta, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>
+                      {formatFrequency(currentFrequency)} - {isToneActive ? `step ${liveVolumeLevel}/${currentVolumeProfile.steps}` : 'starting over'}
+                    </Text>
+                  </View>
                   <Text style={[styles.statusStep, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>
                     {attemptIndex + 1}/{totalAttempts}
                   </Text>
                 </View>
-                <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}> 
+
+                <View style={styles.volumeMeterRow}>
+                  {volumeMeterFill.map((fillAmount, index) => {
+                    const barHeight = 20 + index * 5;
+
+                    return (
+                      <View
+                        key={`meter-${index}`}
+                        style={[
+                          styles.volumeMeterSlot,
+                          {
+                            backgroundColor: theme.progressTrack,
+                            borderColor: theme.border,
+                            height: barHeight,
+                          },
+                        ]}>
+                        <View
+                          style={[
+                            styles.volumeMeterFill,
+                            {
+                              backgroundColor: theme.accent,
+                              height: `${Math.max(fillAmount, 0.08) * 100}%`,
+                              opacity: fillAmount > 0 ? 1 : 0.18,
+                            },
+                          ]}
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.rowBetween}>
+                  <Text style={[styles.statusHint, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>Lower tones ramp harder, higher tones rise in finer steps.</Text>
+                  <Text style={[styles.statusHint, styles.statusHintCount, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>{totalAttempts} total</Text>
+                </View>
+
+                <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}>
                   <Animated.View style={[styles.progressFill, { width: progressWidth, backgroundColor: theme.accent }]} />
                 </View>
               </View>
@@ -413,32 +437,35 @@ export function EarTestFlow() {
       </SafeAreaView>
 
       <Modal animationType="none" presentationStyle="overFullScreen" transparent visible={stage === 'welcome' || stage === 'guide'}>
-        <View style={[styles.modalRoot, { backgroundColor: theme.overlay }]}> 
+        <View style={[styles.modalRoot, { backgroundColor: theme.overlay }]}>
           <Animated.View style={[styles.modalWrap, { opacity: modalOpacity, transform: [{ translateY: modalTranslate }] }]}> 
             <SurfaceCard style={styles.modalCard} theme={theme}>
               {stage === 'welcome' ? (
                 <>
+                  <View style={styles.modalTopRow}>
+                    {canCancelEarTest ? <CircleBackButton onPress={handleCancelRetake} theme={theme} /> : <View style={styles.backButtonSpacer} />}
+                  </View>
                   <View style={[styles.modalIcon, { backgroundColor: theme.accentSoft }]}> 
                     <MaterialCommunityIcons color={theme.accent} name="ear-hearing" size={28} />
                   </View>
                   <Text style={[styles.modalTitle, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Ear test</Text>
-                  <Text style={[styles.modalText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>We will play short sounds in each ear to set up your hearing range.</Text>
+                  <Text style={[styles.modalText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>We will run through a fixed set of tones in each ear and save when you first hear each one.</Text>
                   <ActionButton label="Continue" onPress={() => setStage('guide')} theme={theme} />
                 </>
               ) : null}
 
               {stage === 'guide' ? (
                 <>
+                  <View style={styles.modalTopRow}>
+                    <CircleBackButton onPress={() => setStage('welcome')} theme={theme} />
+                  </View>
                   <Text style={[styles.modalTitle, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Before you start</Text>
                   <View style={styles.instructionsList}>
                     <Instruction icon="headphones" text="Wear both earbuds or headphones." theme={theme} />
-                    <Instruction icon="volume-2" text="When you hear a sound, tap the button." theme={theme} />
+                    <Instruction icon="volume-2" text="Each tone starts soft and rises. Tap as soon as you hear it." theme={theme} />
                     <Instruction icon="clock" text="If you hear nothing, wait and the test will move on." theme={theme} />
                   </View>
-                  <View style={styles.modalActions}>
-                    <ActionButton label="Back" onPress={() => setStage('welcome')} style={styles.flex} theme={theme} variant="ghost" />
-                    <ActionButton label="Got it" onPress={beginTest} style={styles.flex} theme={theme} />
-                  </View>
+                  <ActionButton label="Got it" onPress={beginTest} theme={theme} />
                 </>
               ) : null}
             </SurfaceCard>
@@ -546,6 +573,29 @@ function ReviewItem({
   );
 }
 
+function CircleBackButton({
+  onPress,
+  theme,
+}: {
+  onPress: () => void;
+  theme: ReturnType<typeof useAppState>['theme'];
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.circleBackButton,
+        {
+          backgroundColor: theme.elevated,
+          borderColor: theme.border,
+          opacity: pressed ? 0.82 : 1,
+        },
+      ]}>
+      <Feather color={theme.text} name="arrow-left" size={18} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -626,6 +676,13 @@ const styles = StyleSheet.create({
     height: 220,
     borderRadius: 999,
   },
+  volumeRing: {
+    position: 'absolute',
+    width: 238,
+    height: 238,
+    borderRadius: 999,
+    borderWidth: 3,
+  },
   hearCore: {
     width: 150,
     height: 150,
@@ -657,7 +714,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     borderWidth: 1,
     padding: 16,
-    gap: 10,
+    gap: 12,
   },
   rowBetween: {
     flexDirection: 'row',
@@ -669,9 +726,38 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
   },
+  statusMeta: {
+    marginTop: 2,
+    fontSize: 13,
+    lineHeight: 18,
+  },
   statusStep: {
     fontSize: 13,
     lineHeight: 18,
+  },
+  volumeMeterRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  volumeMeterSlot: {
+    flex: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    justifyContent: 'flex-end',
+    overflow: 'hidden',
+  },
+  volumeMeterFill: {
+    width: '100%',
+    borderRadius: 999,
+  },
+  statusHint: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  statusHintCount: {
+    textAlign: 'right',
   },
   progressTrack: {
     height: 8,
@@ -692,6 +778,22 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     gap: 18,
+  },
+  modalTopRow: {
+    minHeight: 40,
+    alignSelf: 'stretch',
+  },
+  backButtonSpacer: {
+    width: 40,
+    height: 40,
+  },
+  circleBackButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalIcon: {
     width: 56,
@@ -731,10 +833,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     lineHeight: 20,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    gap: 10,
   },
   previewCircle: {
     width: 160,

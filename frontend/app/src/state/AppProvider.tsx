@@ -33,6 +33,7 @@ interface AppContextValue {
   theme: (typeof themes)[ThemeMode];
   navigationTheme: ReturnType<typeof createNavigationTheme>;
   hearingProfile: HearingProfile | null;
+  canCancelEarTest: boolean;
   transcripts: TranscriptRecord[];
   assistantMessages: AssistantMessage[];
   needsEarTest: boolean;
@@ -50,6 +51,7 @@ interface AppContextValue {
   clearConversationData: () => Promise<void>;
   completeEarTest: (profile: HearingProfile) => Promise<void>;
   retakeEarTest: () => void;
+  cancelEarTest: () => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -59,6 +61,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<UserSession | null>(null);
   const [preferences, setPreferences] = useState<AppPreferences>(defaultPreferences);
   const [hearingProfile, setHearingProfile] = useState<HearingProfile | null>(null);
+  const [earTestBackup, setEarTestBackup] = useState<HearingProfile | null>(null);
   const [transcripts, setTranscripts] = useState<TranscriptRecord[]>([]);
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([mockApi.buildIntroMessage()]);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -88,6 +91,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             : defaultPreferences,
         );
         setHearingProfile(persisted.hearingProfile);
+        setEarTestBackup(null);
         setTranscripts(persisted.transcripts ?? []);
         setAssistantMessages(
           persisted.assistantMessages?.length > 0
@@ -136,6 +140,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const nextSession = await mockApi.login(name, email);
       setSession(nextSession);
       setHearingProfile(null);
+      setEarTestBackup(null);
       setTranscripts([]);
       setAssistantMessages([mockApi.buildIntroMessage(nextSession.name)]);
       setPreferences((current) => ({ ...current, isDeviceEnabled: true }));
@@ -148,6 +153,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await mockApi.logout();
     setSession(null);
     setHearingProfile(null);
+    setEarTestBackup(null);
     setTranscripts([]);
     setAssistantMessages([mockApi.buildIntroMessage()]);
     setPreferences((current) => ({ ...current, isDeviceEnabled: false }));
@@ -226,13 +232,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const savedProfile = await mockApi.saveHearingProfile(profile);
       setHearingProfile(savedProfile);
+      setEarTestBackup(null);
     } finally {
       setIsSavingProfile(false);
     }
   };
 
   const retakeEarTest = () => {
+    setEarTestBackup(hearingProfile);
     setHearingProfile(null);
+  };
+
+  const cancelEarTest = () => {
+    if (!earTestBackup) {
+      return;
+    }
+
+    setHearingProfile(earTestBackup);
+    setEarTestBackup(null);
   };
 
   const value: AppContextValue = {
@@ -242,6 +259,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     theme,
     navigationTheme,
     hearingProfile,
+    canCancelEarTest: Boolean(earTestBackup),
     transcripts,
     assistantMessages,
     needsEarTest: Boolean(session && !hearingProfile),
@@ -259,6 +277,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     clearConversationData,
     completeEarTest,
     retakeEarTest,
+    cancelEarTest,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
