@@ -29,6 +29,14 @@ export interface TranscriptRecord {
   source: 'buffer';
 }
 
+export interface AudioBufferStatus {
+  isRecording: boolean;
+  bufferedSeconds: number;
+  maxBufferSeconds: number;
+  recentInputLevel: number;
+  hasRecentInput: boolean;
+}
+
 export interface AssistantMessage {
   id: string;
   role: 'assistant' | 'user';

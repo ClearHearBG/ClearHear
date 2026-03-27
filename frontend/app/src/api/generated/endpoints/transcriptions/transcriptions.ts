@@ -4,72 +4,130 @@
  * ClearHear API
  * OpenAPI spec version: 1.0
  */
-import axios from "axios";
-import type { AxiosRequestConfig, AxiosResponse } from "axios";
-
 import type { TranscriptionDto, TranscriptionEntity } from "../../models";
+
+import { customInstance } from "../../../mutator/custom-instance";
+
+type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
 
 export const getTranscriptions = () => {
 	/**
 	 * @summary Transcribes an audio file to text using Groq Whisper and saves the result.
 	 */
-	const transcriptionsControllerTranscribe = <
-		TData = AxiosResponse<TranscriptionEntity>,
-	>(
+	const transcriptionsControllerTranscribe = (
 		transcriptionDto: TranscriptionDto,
-		options?: AxiosRequestConfig
-	): Promise<TData> => {
+		options?: SecondParameter<typeof customInstance<TranscriptionEntity>>
+	) => {
 		const formData = new FormData();
 		formData.append(`file`, transcriptionDto.file);
 		formData.append(`language`, transcriptionDto.language);
 
-		return axios.post(`/transcriptions`, formData, options);
+		return customInstance<TranscriptionEntity>(
+			{
+				url: `/transcriptions`,
+				method: "POST",
+				headers: { "Content-Type": "multipart/form-data" },
+				data: formData,
+			},
+			options
+		);
 	};
 	/**
 	 * @summary Returns all transcripts for the authenticated user.
 	 */
-	const transcriptionsControllerFindAll = <
-		TData = AxiosResponse<TranscriptionEntity[]>,
-	>(
-		options?: AxiosRequestConfig
-	): Promise<TData> => {
-		return axios.get(`/transcriptions`, options);
+	const transcriptionsControllerFindAll = (
+		options?: SecondParameter<typeof customInstance<TranscriptionEntity[]>>
+	) => {
+		return customInstance<TranscriptionEntity[]>(
+			{ url: `/transcriptions`, method: "GET" },
+			options
+		);
+	};
+	/**
+	 * @summary Deletes all transcripts for the authenticated user.
+	 */
+	const transcriptionsControllerRemoveAll = (
+		options?: SecondParameter<typeof customInstance<void>>
+	) => {
+		return customInstance<void>(
+			{ url: `/transcriptions`, method: "DELETE" },
+			options
+		);
 	};
 	/**
 	 * @summary Returns a single transcript by ID.
 	 */
-	const transcriptionsControllerFindOne = <
-		TData = AxiosResponse<TranscriptionEntity>,
-	>(
+	const transcriptionsControllerFindOne = (
 		id: string,
-		options?: AxiosRequestConfig
-	): Promise<TData> => {
-		return axios.get(`/transcriptions/${id}`, options);
+		options?: SecondParameter<typeof customInstance<TranscriptionEntity>>
+	) => {
+		return customInstance<TranscriptionEntity>(
+			{ url: `/transcriptions/${id}`, method: "GET" },
+			options
+		);
 	};
 	/**
 	 * @summary Deletes a transcript by ID.
 	 */
-	const transcriptionsControllerRemove = <
-		TData = AxiosResponse<TranscriptionEntity>,
-	>(
+	const transcriptionsControllerRemove = (
 		id: string,
-		options?: AxiosRequestConfig
-	): Promise<TData> => {
-		return axios.delete(`/transcriptions/${id}`, options);
+		options?: SecondParameter<typeof customInstance<TranscriptionEntity>>
+	) => {
+		return customInstance<TranscriptionEntity>(
+			{ url: `/transcriptions/${id}`, method: "DELETE" },
+			options
+		);
 	};
 	return {
 		transcriptionsControllerTranscribe,
 		transcriptionsControllerFindAll,
+		transcriptionsControllerRemoveAll,
 		transcriptionsControllerFindOne,
 		transcriptionsControllerRemove,
 	};
 };
-export type TranscriptionsControllerTranscribeResult =
-	AxiosResponse<TranscriptionEntity>;
-export type TranscriptionsControllerFindAllResult = AxiosResponse<
-	TranscriptionEntity[]
+export type TranscriptionsControllerTranscribeResult = NonNullable<
+	Awaited<
+		ReturnType<
+			ReturnType<
+				typeof getTranscriptions
+			>["transcriptionsControllerTranscribe"]
+		>
+	>
 >;
-export type TranscriptionsControllerFindOneResult =
-	AxiosResponse<TranscriptionEntity>;
-export type TranscriptionsControllerRemoveResult =
-	AxiosResponse<TranscriptionEntity>;
+export type TranscriptionsControllerFindAllResult = NonNullable<
+	Awaited<
+		ReturnType<
+			ReturnType<
+				typeof getTranscriptions
+			>["transcriptionsControllerFindAll"]
+		>
+	>
+>;
+export type TranscriptionsControllerRemoveAllResult = NonNullable<
+	Awaited<
+		ReturnType<
+			ReturnType<
+				typeof getTranscriptions
+			>["transcriptionsControllerRemoveAll"]
+		>
+	>
+>;
+export type TranscriptionsControllerFindOneResult = NonNullable<
+	Awaited<
+		ReturnType<
+			ReturnType<
+				typeof getTranscriptions
+			>["transcriptionsControllerFindOne"]
+		>
+	>
+>;
+export type TranscriptionsControllerRemoveResult = NonNullable<
+	Awaited<
+		ReturnType<
+			ReturnType<
+				typeof getTranscriptions
+			>["transcriptionsControllerRemove"]
+		>
+	>
+>;

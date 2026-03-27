@@ -5,10 +5,10 @@ dotenv.config({
 	path: ".env.local",
 });
 
-const apiUrl = process.env.API_URL;
+const apiUrl = process.env.EXPO_PUBLIC_API_URL;
 
 if (!apiUrl) {
-	throw new Error("API_URL is not defined in the environment variables.");
+	throw new Error("EXPO_PUBLIC_API_URL is not defined in the environment variables.");
 }
 
 export default defineConfig({
@@ -22,6 +22,12 @@ export default defineConfig({
 			schemas: "./src/api/generated/models",
 			client: "axios",
 			prettier: true,
+			override: {
+				mutator: {
+					path: "./src/api/mutator/custom-instance.ts",
+					name: "customInstance",
+				},
+			},
 		},
 	},
 });

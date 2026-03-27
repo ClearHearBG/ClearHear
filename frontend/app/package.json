@@ -4,10 +4,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
+    "start": "expo start --dev-client",
+    "android:reverse": "adb reverse tcp:8393 tcp:8393",
+    "android": "npm run android:reverse && expo run:android",
+    "android:start": "npm run android:reverse && expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "api:generate": "orval --config orval.config.ts"
   },
   "dependencies": {
     "@clerk/clerk-expo": "^2.19.31",

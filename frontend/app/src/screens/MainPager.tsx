@@ -77,8 +77,17 @@ export function MainPager() {
 }
 
 function HomePage() {
-  const { preferences, theme, toggleDeviceEnabled } = useAppState();
+  const { audioBufferStatus, preferences, theme, toggleDeviceEnabled } = useAppState();
   const isOn = preferences.isDeviceEnabled;
+  const bufferedSeconds = Math.min(
+    Math.round(audioBufferStatus.bufferedSeconds),
+    Math.round(audioBufferStatus.maxBufferSeconds),
+  );
+  const micStatusText = isOn
+    ? audioBufferStatus.hasRecentInput
+      ? `Mic input detected. Buffer: ${bufferedSeconds}s / ${Math.round(audioBufferStatus.maxBufferSeconds)}s.`
+      : `Listening is on, but no strong mic input was detected yet. Buffer: ${bufferedSeconds}s / ${Math.round(audioBufferStatus.maxBufferSeconds)}s.`
+    : 'Turn listening on to start filling the local audio buffer.';
 
   return (
     <View style={[styles.pageContent, styles.homePageContent]}>
@@ -108,6 +117,9 @@ function HomePage() {
           <Text style={[styles.statusSubtext, { color: theme.textMuted, fontFamily: theme.fonts.body }]}> 
             {isOn ? 'Hearing support is active. Tap the circle to pause it.' : 'Hearing support is paused. Tap the circle to turn it on.'}
           </Text>
+          <Text style={[styles.micStatusText, { color: audioBufferStatus.hasRecentInput ? theme.accent : theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>
+            {micStatusText}
+          </Text>
         </View>
       </AnimatedEntrance>
     </View>
@@ -115,7 +127,7 @@ function HomePage() {
 }
 
 function RecapsPage({ onOpenAI }: { onOpenAI: () => void }) {
-  const { clearConversationData, isTranscribing, theme, transcripts, transcribeLastFiveMinutes } = useAppState();
+  const { clearConversationData, deleteTranscript, isTranscribing, theme, transcripts, transcribeLastFiveMinutes } = useAppState();
 
   const confirmClear = () => {
     Alert.alert('Clear recaps?', 'This removes all saved recaps.', [
@@ -125,6 +137,19 @@ function RecapsPage({ onOpenAI }: { onOpenAI: () => void }) {
         style: 'destructive',
         onPress: () => {
           void clearConversationData();
+        },
+      },
+    ]);
+  };
+
+  const confirmDeleteTranscript = (id: string) => {
+    Alert.alert('Delete recap?', 'This removes this recap from your saved history.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          void deleteTranscript(id);
         },
       },
     ]);
@@ -142,7 +167,7 @@ function RecapsPage({ onOpenAI }: { onOpenAI: () => void }) {
       <AnimatedEntrance delay={60}>
         <ActionButton
           disabled={isTranscribing}
-          label={isTranscribing ? 'Saving...' : 'Save recent conversation'}
+          label={isTranscribing ? 'Creating recap...' : 'Create recap from last 15 seconds'}
           onPress={() => {
             void transcribeLastFiveMinutes();
           }}
@@ -164,7 +189,21 @@ function RecapsPage({ onOpenAI }: { onOpenAI: () => void }) {
               <SurfaceCard key={transcript.id} style={styles.recapCard} theme={theme}>
                 <View style={styles.rowBetween}>
                   <Text style={[styles.recapTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{transcript.title}</Text>
-                  <Pill label={formatRelative(transcript.createdAt)} theme={theme} />
+                  <View style={styles.recapMetaWrap}>
+                    <Pill label={formatRelative(transcript.createdAt)} theme={theme} />
+                    <Pressable
+                      onPress={() => confirmDeleteTranscript(transcript.id)}
+                      style={({ pressed }) => [
+                        styles.recapDeleteButton,
+                        {
+                          backgroundColor: theme.elevated,
+                          borderColor: theme.border,
+                          opacity: pressed ? 0.82 : 1,
+                        },
+                      ]}>
+                      <Feather color={theme.danger} name="trash-2" size={16} />
+                    </Pressable>
+                  </View>
                 </View>
                 <Text style={[styles.recapBody, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{transcript.text}</Text>
               </SurfaceCard>
@@ -487,6 +526,12 @@ const styles = StyleSheet.create({
     maxWidth: 260,
     textAlign: 'center',
   },
+  micStatusText: {
+    fontSize: 13,
+    lineHeight: 19,
+    maxWidth: 280,
+    textAlign: 'center',
+  },
   emptyCard: {
     alignItems: 'center',
     gap: 12,
@@ -515,6 +560,19 @@ const styles = StyleSheet.create({
   recapBody: {
     fontSize: 14,
     lineHeight: 22,
+  },
+  recapMetaWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  recapDeleteButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   recapsActions: {
     flexDirection: 'row',
