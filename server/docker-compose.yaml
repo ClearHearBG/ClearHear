@@ -1,4 +1,17 @@
 services:
+    server:
+        build:
+            context: .
+        restart: always
+        env_file:
+            - .env
+        environment:
+            - POSTGRES_HOST=postgres:5432
+        ports:
+            - "8393:8393"
+        depends_on:
+            - postgres
+
     postgres:
         image: postgres:18-alpine
         restart: always

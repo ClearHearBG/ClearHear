@@ -1,10 +1,10 @@
 import "dotenv/config";
-import { defineConfig, env } from "prisma/config";
+import { defineConfig } from "prisma/config";
 
-const DB_USER = encodeURIComponent(env("POSTGRES_USER"));
-const DB_PASSWORD = encodeURIComponent(env("POSTGRES_PASSWORD"));
-const DB_HOST = env("POSTGRES_HOST");
-const DB_NAME = env("POSTGRES_DB");
+const DB_USER = encodeURIComponent(process.env.POSTGRES_USER ?? "");
+const DB_PASSWORD = encodeURIComponent(process.env.POSTGRES_PASSWORD ?? "");
+const DB_HOST = process.env.POSTGRES_HOST ?? "";
+const DB_NAME = process.env.POSTGRES_DB ?? "";
 
 const url = `postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}/${DB_NAME}`;
 
