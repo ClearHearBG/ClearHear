@@ -2,6 +2,7 @@
   "name": "clearhear",
   "main": "expo-router/entry",
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
@@ -20,6 +21,8 @@
     "@react-navigation/native": "^7.2.1",
     "@react-navigation/native-stack": "^7.14.9",
     "@react-navigation/stack": "^7.8.8",
+    "axios": "^1.13.6",
+    "dotenv": "^17.3.1",
     "expo": "~54.0.33",
     "expo-auth-session": "~7.0.10",
     "expo-av": "~16.0.8",
@@ -51,6 +54,8 @@
     "@types/react": "~19.1.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
+    "orval": "^7.13.2",
+    "ts-node": "^10.9.2",
     "typescript": "~5.9.2"
   },
   "private": true
