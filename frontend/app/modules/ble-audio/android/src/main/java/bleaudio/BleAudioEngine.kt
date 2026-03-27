@@ -46,7 +46,7 @@ internal class BleAudioEngine(
   private val mainHandler = Handler(Looper.getMainLooper())
   private val lock = Any()
 
-  private var currentConfig = HearingSupportConfig(emptyList(), DEFAULT_MAX_GAIN_DB, DEFAULT_BAND_COUNT, 6.0, 1.0, null, null)
+  private var currentConfig = HearingSupportConfig(emptyList(), emptyList(), DEFAULT_MAX_GAIN_DB, DEFAULT_BAND_COUNT, 6.0, 1.0, null, null)
   private var currentStage = "idle"
   private var lastError: String? = null
   private var activeInputChannels = 1
@@ -108,14 +108,14 @@ internal class BleAudioEngine(
 
       if (config.points.isEmpty()) {
         currentStage = "error"
-        lastError = "Ear test results are unavailable. Run the ear test before enabling live support."
+        lastError = "Ear test results are unavailable. Run the ear test before enabling live audio processing."
         return emitAndReturnStatusLocked()
       }
 
       routeSelection = selectPreferredRouteLocked()
         ?: run {
           currentStage = "error"
-          lastError = "Connect headphones or earbuds to start live hearing support."
+          lastError = "Connect headphones or earbuds to start live audio processing."
           return emitAndReturnStatusLocked()
         }
 
@@ -224,8 +224,6 @@ internal class BleAudioEngine(
 
     try {
       configureRouting(record, track, inputDevice, outputDevice)
-      val filterBanks = buildFilterBanks(currentConfig, formatChoice.sampleRate)
-      val calibratedOutputGain = OUTPUT_HEADROOM * dbToLinear(currentConfig.baseGainDb)
       var startupFramesMuted = formatChoice.processingChunkFrames * STARTUP_MUTE_CHUNKS
       var startupFadeFramesRemaining = formatChoice.processingChunkFrames * STARTUP_FADE_CHUNKS
 
@@ -242,8 +240,13 @@ internal class BleAudioEngine(
       val actualInputDevice = record.routedDevice ?: inputDevice
       val actualOutputDevice = track.routedDevice ?: outputDevice
       val runtimeInputChannels = resolveRuntimeInputChannels(record, actualInputDevice, formatChoice.inputChannels)
+      val audioProcessor = buildAudioProcessor(currentConfig, formatChoice.sampleRate)
       val inputBuffer = ShortArray(formatChoice.processingChunkFrames * max(runtimeInputChannels, formatChoice.inputChannels))
       val outputBuffer = ShortArray(formatChoice.processingChunkFrames * 2)
+      val leftInput = FloatArray(formatChoice.processingChunkFrames)
+      val rightInput = FloatArray(formatChoice.processingChunkFrames)
+      val leftOutput = FloatArray(formatChoice.processingChunkFrames)
+      val rightOutput = FloatArray(formatChoice.processingChunkFrames)
 
       synchronized(lock) {
         if (running) {
@@ -266,34 +269,30 @@ internal class BleAudioEngine(
 
         val framesRead = samplesRead / runtimeInputChannels
         var inputIndex = 0
-        var outputIndex = 0
 
         for (frame in 0 until framesRead) {
-          val inputLeft: Float
-          val inputRight: Float
-
           if (runtimeInputChannels == 2 && inputIndex + 1 < samplesRead) {
-            inputLeft = pcm16ToFloat(inputBuffer[inputIndex])
-            inputRight = pcm16ToFloat(inputBuffer[inputIndex + 1])
+            leftInput[frame] = pcm16ToFloat(inputBuffer[inputIndex])
+            rightInput[frame] = pcm16ToFloat(inputBuffer[inputIndex + 1])
             inputIndex += 2
           } else {
             val sharedInput = pcm16ToFloat(inputBuffer[inputIndex])
-            inputLeft = sharedInput
-            inputRight = sharedInput
+            leftInput[frame] = sharedInput
             inputIndex += 1
           }
+        }
 
-          var outputLeft: Float
-          var outputRight: Float
+        if (runtimeInputChannels >= 2) {
+          audioProcessor.processStereo(leftInput, rightInput, framesRead, leftOutput, rightOutput)
+        } else {
+          audioProcessor.processMono(leftInput, framesRead, leftOutput, rightOutput)
+        }
 
-          if (runtimeInputChannels >= 2) {
-            outputLeft = clampAudio(filterBanks.left.process(inputLeft) * calibratedOutputGain)
-            outputRight = clampAudio(filterBanks.right.process(inputRight) * calibratedOutputGain)
-          } else {
-            val sharedOutput = clampAudio(filterBanks.shared.process(inputLeft) * calibratedOutputGain)
-            outputLeft = sharedOutput
-            outputRight = sharedOutput
-          }
+        var outputIndex = 0
+
+        for (frame in 0 until framesRead) {
+          var outputLeft = leftOutput[frame]
+          var outputRight = rightOutput[frame]
 
           if (startupFramesMuted > 0) {
             outputLeft = 0f
@@ -316,7 +315,7 @@ internal class BleAudioEngine(
       }
     } catch (error: Throwable) {
       if (isRunning()) {
-        failureMessage = error.message ?: "Live hearing support stopped unexpectedly."
+        failureMessage = error.message ?: "Live audio processing stopped unexpectedly."
       }
     } finally {
       recordEffects.release()
@@ -486,6 +485,48 @@ internal class BleAudioEngine(
       left = createFilterBank(leftCurve, bandCenters, sampleRate),
       right = createFilterBank(rightCurve, bandCenters, sampleRate),
       shared = createFilterBank(sharedCurve, bandCenters, sampleRate),
+    )
+  }
+
+  private fun buildAudioProcessor(config: HearingSupportConfig, sampleRate: Int): StereoAudioProcessor {
+    val filterBanks = buildFilterBanks(config, sampleRate)
+    val leftRange = rangeForEar(config.hearingRanges, "left")
+    val rightRange = rangeForEar(config.hearingRanges, "right")
+    val leftFallback = leftRange ?: rightRange
+    val rightFallback = rightRange ?: leftRange
+    val sharedRange = sharedRange(leftFallback, rightFallback)
+    val calibratedOutputGain = OUTPUT_HEADROOM * dbToLinear(config.baseGainDb)
+
+    return StereoAudioProcessor(
+      sampleRate = sampleRate,
+      leftRange = leftFallback,
+      rightRange = rightFallback,
+      sharedRange = sharedRange,
+      filterBanks = filterBanks,
+      outputGain = calibratedOutputGain,
+    )
+  }
+
+  private fun rangeForEar(ranges: List<HearingRangeConfig>, ear: String): HearingFrequencyRange? {
+    val entry = ranges.firstOrNull { it.ear == ear } ?: return null
+    return HearingFrequencyRange.normalized(entry.minFrequencyHz, entry.maxFrequencyHz)
+  }
+
+  private fun sharedRange(
+    leftRange: HearingFrequencyRange?,
+    rightRange: HearingFrequencyRange?,
+  ): HearingFrequencyRange? {
+    if (leftRange == null) {
+      return rightRange
+    }
+
+    if (rightRange == null) {
+      return leftRange
+    }
+
+    return HearingFrequencyRange.normalized(
+      minFrequencyHz = (leftRange.minFrequencyHz + rightRange.minFrequencyHz) / 2.0,
+      maxFrequencyHz = (leftRange.maxFrequencyHz + rightRange.maxFrequencyHz) / 2.0,
     )
   }
 
@@ -970,13 +1011,14 @@ internal class BleAudioEngine(
       }
     }
 
+    val hearingRanges = parseHearingRanges(json, points)
     val maxGainDb = json.optDouble("maxGainDb", DEFAULT_MAX_GAIN_DB).coerceIn(0.0, DEFAULT_MAX_GAIN_DB)
     val bandCount = json.optInt("bandCount", DEFAULT_BAND_COUNT).coerceIn(MIN_BAND_COUNT, MAX_BAND_COUNT)
     val baseGainDb = json.optDouble("baseGainDb", 6.0).coerceIn(0.0, DEFAULT_MAX_GAIN_DB)
     val boostMultiplier = json.optDouble("boostMultiplier", 1.0).coerceIn(0.5, 2.2)
     val preferredInputId = optPreferredDeviceId(json, "preferredInputId")
     val preferredOutputId = optPreferredDeviceId(json, "preferredOutputId")
-    return HearingSupportConfig(points, maxGainDb, bandCount, baseGainDb, boostMultiplier, preferredInputId, preferredOutputId)
+    return HearingSupportConfig(points, hearingRanges, maxGainDb, bandCount, baseGainDb, boostMultiplier, preferredInputId, preferredOutputId)
   }
 
   private fun optPreferredDeviceId(json: JSONObject, key: String): Int? {
@@ -985,6 +1027,72 @@ internal class BleAudioEngine(
     }
 
     return json.optInt(key).takeIf { it > 0 }
+  }
+
+  private fun parseHearingRanges(json: JSONObject, points: List<HearingPointConfig>): List<HearingRangeConfig> {
+    val rangesByEar = linkedMapOf<String, HearingRangeConfig>()
+    val rangesJson = json.optJSONArray("hearingRange")
+
+    if (rangesJson != null) {
+      for (index in 0 until rangesJson.length()) {
+        val rangeJson = rangesJson.optJSONObject(index) ?: continue
+        val ear = rangeJson.optString("ear", "").lowercase()
+
+        if (ear != "left" && ear != "right") {
+          continue
+        }
+
+        rangesByEar[ear] = HearingRangeConfig(
+          ear = ear,
+          minFrequencyHz = optFrequency(rangeJson, "minFrequency"),
+          maxFrequencyHz = optFrequency(rangeJson, "maxFrequency"),
+        )
+      }
+    }
+
+    listOf("left", "right").forEach { ear ->
+      val derivedRange = deriveRangeFromPoints(points, ear)
+      val currentRange = rangesByEar[ear]
+
+      if (currentRange == null) {
+        if (derivedRange != null) {
+          rangesByEar[ear] = derivedRange
+        }
+      } else {
+        rangesByEar[ear] = HearingRangeConfig(
+          ear = ear,
+          minFrequencyHz = currentRange.minFrequencyHz ?: derivedRange?.minFrequencyHz,
+          maxFrequencyHz = currentRange.maxFrequencyHz ?: derivedRange?.maxFrequencyHz,
+        )
+      }
+    }
+
+    return rangesByEar.values.toList()
+  }
+
+  private fun deriveRangeFromPoints(points: List<HearingPointConfig>, ear: String): HearingRangeConfig? {
+    val heardPoints = points
+      .filter { it.ear == ear && it.lossDb < 80.0 }
+      .sortedBy { it.frequencyHz }
+
+    if (heardPoints.isEmpty()) {
+      return null
+    }
+
+    return HearingRangeConfig(
+      ear = ear,
+      minFrequencyHz = heardPoints.first().frequencyHz,
+      maxFrequencyHz = heardPoints.last().frequencyHz,
+    )
+  }
+
+  private fun optFrequency(json: JSONObject, key: String): Double? {
+    if (!json.has(key) || json.isNull(key)) {
+      return null
+    }
+
+    val value = json.optDouble(key, Double.NaN)
+    return value.takeIf { it.isFinite() && it > 0.0 }
   }
 
   private fun pointsForEar(points: List<HearingPointConfig>, ear: String): List<GainPoint> {
@@ -1077,6 +1185,7 @@ private data class HearingPointConfig(
 
 private data class HearingSupportConfig(
   val points: List<HearingPointConfig>,
+  val hearingRanges: List<HearingRangeConfig>,
   val maxGainDb: Double,
   val bandCount: Int,
   val baseGainDb: Double,
@@ -1121,7 +1230,7 @@ private data class GainPoint(
   val gainDb: Double,
 )
 
-private data class StereoFilterBank(
+internal data class StereoFilterBank(
   val left: FilterBank,
   val right: FilterBank,
   val shared: FilterBank,

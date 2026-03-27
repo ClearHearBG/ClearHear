@@ -17,7 +17,7 @@ const unsupportedStatus: HearingSupportStatus = {
   selectedOutput: null,
   availableInputs: [],
   availableOutputs: [],
-  lastError: 'Live hearing support is only available on Android.',
+  lastError: 'Live audio processing is only available on Android.',
 };
 
 class BleAudioModule extends NativeModule<BleAudioModuleEvents> {

@@ -19,8 +19,15 @@ export type HearingSupportPoint = {
   lossDb: number;
 };
 
+export type HearingRangePoint = {
+  ear: 'left' | 'right';
+  minFrequency: number | null;
+  maxFrequency: number | null;
+};
+
 export type NativeHearingSupportConfig = {
   points: HearingSupportPoint[];
+  hearingRange?: HearingRangePoint[];
   maxGainDb?: number;
   bandCount?: number;
   baseGainDb?: number;

@@ -4,13 +4,21 @@ import { Buffer } from 'buffer';
 import { Platform } from 'react-native';
 
 import type { EarSide } from '@/src/types/app';
-import { getThresholdAtProgress } from '@/src/utils/hearing';
+import {
+  getBoundarySweepFrequencyAtProgress,
+  getThresholdAtProgress,
+  type HearingBoundaryDirection,
+} from '@/src/utils/hearing';
 
 const SAMPLE_RATE = 44100;
 export const RAMPED_TONE_DURATION_MS = 4600;
+export const BOUNDARY_SWEEP_DURATION_MS = 5200;
 
 const TONE_DURATION_SECONDS = RAMPED_TONE_DURATION_MS / 1000;
+const BOUNDARY_SWEEP_DURATION_SECONDS = BOUNDARY_SWEEP_DURATION_MS / 1000;
 const FADE_OUT_SECONDS = 0.06;
+const BOUNDARY_SWEEP_FADE_SECONDS = 0.08;
+const BOUNDARY_SWEEP_AMPLITUDE = 0.22;
 
 const toneCache = new Map<string, string>();
 
@@ -75,6 +83,38 @@ function buildRampedToneWave(frequency: number, ear: EarSide): Uint8Array {
   return bytes;
 }
 
+function buildBoundarySweepWave(direction: HearingBoundaryDirection, ear: EarSide): Uint8Array {
+  const frameCount = Math.floor(SAMPLE_RATE * BOUNDARY_SWEEP_DURATION_SECONDS);
+  const dataLength = frameCount * 4;
+  const bytes = new Uint8Array(44 + dataLength);
+  const view = new DataView(bytes.buffer);
+
+  writeWavHeader(view, dataLength, SAMPLE_RATE);
+
+  const fadeFrames = Math.floor(SAMPLE_RATE * BOUNDARY_SWEEP_FADE_SECONDS);
+  let offset = 44;
+  let phase = 0;
+
+  for (let index = 0; index < frameCount; index += 1) {
+    const progress = index / Math.max(1, frameCount - 1);
+    const frequency = getBoundarySweepFrequencyAtProgress(direction, progress);
+    const fadeIn = index < fadeFrames ? index / Math.max(1, fadeFrames) : 1;
+    const fadeOut = index > frameCount - fadeFrames ? (frameCount - index) / Math.max(1, fadeFrames) : 1;
+    const envelope = Math.max(0, Math.min(1, Math.min(fadeIn, fadeOut)));
+
+    phase += (2 * Math.PI * frequency) / SAMPLE_RATE;
+
+    const sampleValue = Math.sin(phase) * BOUNDARY_SWEEP_AMPLITUDE * envelope;
+    const pcm = Math.max(-1, Math.min(1, sampleValue)) * 32767;
+
+    view.setInt16(offset, ear === 'left' ? pcm : 0, true);
+    view.setInt16(offset + 2, ear === 'right' ? pcm : 0, true);
+    offset += 4;
+  }
+
+  return bytes;
+}
+
 async function getToneUri(frequency: number, ear: EarSide): Promise<string> {
   const cacheKey = `${ear}-${frequency}-progressive-v4`;
   const cachedUri = toneCache.get(cacheKey);
@@ -84,6 +124,36 @@ async function getToneUri(frequency: number, ear: EarSide): Promise<string> {
   }
 
   const bytes = buildRampedToneWave(frequency, ear);
+  const base64 = Buffer.from(bytes).toString('base64');
+
+  if (Platform.OS === 'web') {
+    const dataUri = `data:audio/wav;base64,${base64}`;
+    toneCache.set(cacheKey, dataUri);
+    return dataUri;
+  }
+
+  if (!FileSystem.cacheDirectory) {
+    throw new Error('Missing cache directory for tone playback');
+  }
+
+  const uri = `${FileSystem.cacheDirectory}clearhear-tone-${cacheKey}.wav`;
+  await FileSystem.writeAsStringAsync(uri, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  toneCache.set(cacheKey, uri);
+
+  return uri;
+}
+
+async function getBoundarySweepUri(direction: HearingBoundaryDirection, ear: EarSide): Promise<string> {
+  const cacheKey = `${ear}-${direction}-boundary-sweep-v1`;
+  const cachedUri = toneCache.get(cacheKey);
+
+  if (cachedUri) {
+    return cachedUri;
+  }
+
+  const bytes = buildBoundarySweepWave(direction, ear);
   const base64 = Buffer.from(bytes).toString('base64');
 
   if (Platform.OS === 'web') {
@@ -220,6 +290,86 @@ export async function playRampedTone({
 
     activePlaybackResolve = finishPlayback;
     activePlaybackTimeout = setTimeout(finishPlayback, RAMPED_TONE_DURATION_MS + 200);
+    subscription = player.addListener('playbackStatusUpdate', (status) => {
+      if (sessionId !== playbackSessionId || status.didJustFinish) {
+        finishPlayback();
+      }
+    });
+    activePlayerSubscription = subscription;
+
+    if (sessionId !== playbackSessionId) {
+      finishPlayback();
+      return;
+    }
+
+    player.play();
+  });
+}
+
+export async function playBoundarySweep({
+  direction,
+  ear,
+}: {
+  direction: HearingBoundaryDirection;
+  ear: EarSide;
+}) {
+  const sessionId = playbackSessionId + 1;
+  playbackSessionId = sessionId;
+
+  await prepareTonePlayer();
+  await unloadActiveSound();
+
+  const uri = await getBoundarySweepUri(direction, ear);
+
+  if (sessionId !== playbackSessionId) {
+    return;
+  }
+
+  const player = createAudioPlayer(uri, {
+    updateInterval: 80,
+  });
+
+  if (sessionId !== playbackSessionId) {
+    disposePlayer(player);
+    return;
+  }
+
+  player.volume = 1;
+  activePlayer = player;
+
+  await new Promise<void>((resolve) => {
+    let resolved = false;
+    let subscription: { remove: () => void } | null = null;
+
+    const finishPlayback = () => {
+      if (resolved) {
+        return;
+      }
+
+      resolved = true;
+
+      subscription?.remove();
+      if (activePlayerSubscription === subscription) {
+        activePlayerSubscription = null;
+      }
+      if (activePlaybackResolve === finishPlayback) {
+        activePlaybackResolve = null;
+      }
+      if (activePlaybackTimeout) {
+        clearTimeout(activePlaybackTimeout);
+        activePlaybackTimeout = null;
+      }
+
+      if (activePlayer === player) {
+        activePlayer = null;
+      }
+
+      disposePlayer(player);
+      resolve();
+    };
+
+    activePlaybackResolve = finishPlayback;
+    activePlaybackTimeout = setTimeout(finishPlayback, BOUNDARY_SWEEP_DURATION_MS + 200);
     subscription = player.addListener('playbackStatusUpdate', (status) => {
       if (sessionId !== playbackSessionId || status.didJustFinish) {
         finishPlayback();

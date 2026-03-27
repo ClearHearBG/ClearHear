@@ -32,7 +32,7 @@ const defaultPreferences: AppPreferences = {
   preferredOutputId: null,
 };
 
-const HEARING_SUPPORT_PERMISSION_ERROR = 'Microphone permission is required to run live hearing support.';
+const HEARING_SUPPORT_PERMISSION_ERROR = 'Microphone permission is required to run live audio processing.';
 
 type EarTestBackupState = {
   profile: HearingProfile;
@@ -77,7 +77,7 @@ function normalizeProfileMap(
 }
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Live hearing support could not start.';
+  return error instanceof Error ? error.message : 'Live audio processing could not start.';
 }
 
 interface AppContextValue {

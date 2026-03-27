@@ -49,6 +49,18 @@ function toNativeConfig(
     bandCount: DEFAULT_BAND_COUNT,
     baseGainDb: profile.calibration.baseGainDb,
     boostMultiplier: profile.calibration.boostMultiplier,
+    hearingRange: [
+      {
+        ear: 'left',
+        minFrequency: profile.hearingRange.left.minFrequency,
+        maxFrequency: profile.hearingRange.left.maxFrequency,
+      },
+      {
+        ear: 'right',
+        minFrequency: profile.hearingRange.right.minFrequency,
+        maxFrequency: profile.hearingRange.right.maxFrequency,
+      },
+    ],
     maxGainDb: DEFAULT_MAX_GAIN_DB,
     preferredInputId: routePreferences?.preferredInputId ?? null,
     preferredOutputId: routePreferences?.preferredOutputId ?? null,
@@ -87,7 +99,7 @@ export async function requestHearingSupportPermissionAsync(): Promise<boolean> {
 
 export async function getHearingSupportStatusAsync(): Promise<HearingSupportStatus> {
   if (!isAndroid()) {
-    return createBaseStatus('Live hearing support is only available on Android.');
+    return createBaseStatus('Live audio processing is only available on Android.');
   }
 
   return ClearHearAudio.getStatusAsync();
@@ -109,7 +121,7 @@ export async function startHearingSupportAsync(
   },
 ): Promise<HearingSupportStatus> {
   if (!isAndroid()) {
-    return createBaseStatus('Live hearing support is only available on Android.');
+    return createBaseStatus('Live audio processing is only available on Android.');
   }
 
   return ClearHearAudio.startAsync(JSON.stringify(toNativeConfig(profile, routePreferences)));
@@ -123,7 +135,7 @@ export async function updateHearingSupportProfileAsync(
   },
 ): Promise<HearingSupportStatus> {
   if (!isAndroid()) {
-    return createBaseStatus('Live hearing support is only available on Android.');
+    return createBaseStatus('Live audio processing is only available on Android.');
   }
 
   return ClearHearAudio.updateProfileAsync(JSON.stringify(toNativeConfig(profile, routePreferences)));

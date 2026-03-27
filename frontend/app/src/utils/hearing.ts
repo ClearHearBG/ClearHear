@@ -1,16 +1,36 @@
-import type { EarSide, HearingCalibration, HearingPoint, HearingProfile, HearingSummary } from '@/src/types/app';
+import type {
+  EarSide,
+  HearingCalibration,
+  HearingPoint,
+  HearingProfile,
+  HearingRange,
+  HearingRangeByEar,
+  HearingSummary,
+} from '@/src/types/app';
 
+export const SOURCE_MIN_FREQUENCY = 20;
+export const SOURCE_MAX_FREQUENCY = 20000;
 export const EAR_TEST_FREQUENCIES = [63, 80, 100, 125, 180, 250, 350, 500, 700, 1000, 1400, 2000, 2800, 4000, 5600, 8000, 11000, 14000, 16000] as const;
 export const MIN_TEST_FREQUENCY = EAR_TEST_FREQUENCIES[0];
 export const MAX_TEST_FREQUENCY = EAR_TEST_FREQUENCIES[EAR_TEST_FREQUENCIES.length - 1];
 export const TEST_EAR_ORDER: EarSide[] = ['left', 'right'];
 export const TEST_THRESHOLD_MIN = 4;
 export const TEST_THRESHOLD_MAX = 64;
+
 const MAX_HEARD_LOSS_DB = 72;
+const MIN_RANGE_SPAN_HZ = 80;
+
 export const DEFAULT_HEARING_CALIBRATION: HearingCalibration = {
   baseGainDb: 6,
   boostMultiplier: 1,
 };
+
+export const DEFAULT_HEARING_RANGE_BY_EAR: HearingRangeByEar = {
+  left: { minFrequency: null, maxFrequency: null },
+  right: { minFrequency: null, maxFrequency: null },
+};
+
+export type HearingBoundaryDirection = 'low' | 'high';
 
 interface FrequencyVolumeProfile {
   startThreshold: number;
@@ -20,6 +40,101 @@ interface FrequencyVolumeProfile {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function toFiniteFrequency(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return clamp(Math.round(value), SOURCE_MIN_FREQUENCY, SOURCE_MAX_FREQUENCY);
+}
+
+function createDerivedRange(points: HearingPoint[]): HearingRange {
+  const heardPoints = points.filter((point) => point.heard);
+
+  if (heardPoints.length === 0) {
+    return { minFrequency: null, maxFrequency: null };
+  }
+
+  return {
+    minFrequency: Math.min(...heardPoints.map((point) => point.frequency)),
+    maxFrequency: Math.max(...heardPoints.map((point) => point.frequency)),
+  };
+}
+
+function normalizeHearingRange(range?: Partial<HearingRange> | null, fallback?: HearingRange): HearingRange {
+  const fallbackMin = toFiniteFrequency(fallback?.minFrequency);
+  const fallbackMax = toFiniteFrequency(fallback?.maxFrequency);
+  const nextMin = toFiniteFrequency(range?.minFrequency) ?? fallbackMin;
+  const nextMax = toFiniteFrequency(range?.maxFrequency) ?? fallbackMax;
+
+  if (nextMin === null && nextMax === null) {
+    return { minFrequency: null, maxFrequency: null };
+  }
+
+  if (nextMin === null) {
+    return {
+      minFrequency: clamp((nextMax ?? SOURCE_MAX_FREQUENCY) - MIN_RANGE_SPAN_HZ, SOURCE_MIN_FREQUENCY, SOURCE_MAX_FREQUENCY),
+      maxFrequency: nextMax,
+    };
+  }
+
+  if (nextMax === null) {
+    return {
+      minFrequency: nextMin,
+      maxFrequency: clamp(nextMin + MIN_RANGE_SPAN_HZ, SOURCE_MIN_FREQUENCY, SOURCE_MAX_FREQUENCY),
+    };
+  }
+
+  if (nextMax <= nextMin) {
+    return {
+      minFrequency: nextMin,
+      maxFrequency: clamp(nextMin + MIN_RANGE_SPAN_HZ, SOURCE_MIN_FREQUENCY, SOURCE_MAX_FREQUENCY),
+    };
+  }
+
+  return {
+    minFrequency: nextMin,
+    maxFrequency: nextMax,
+  };
+}
+
+function legacyRangeForEar(profile: HearingProfile, ear: EarSide): HearingRange {
+  const summary = ear === 'left' ? profile.leftSummary : profile.rightSummary;
+  const fallback = createDerivedRange(profile.points.filter((point) => point.ear === ear));
+
+  return normalizeHearingRange(
+    {
+      minFrequency: summary.lowRangeHz,
+      maxFrequency: summary.highRangeHz,
+    },
+    fallback,
+  );
+}
+
+export function normalizeHearingRangeByEar(rangeByEar?: Partial<HearingRangeByEar> | null, fallbackPoints: HearingPoint[] = []): HearingRangeByEar {
+  const fallbackLeft = createDerivedRange(fallbackPoints.filter((point) => point.ear === 'left'));
+  const fallbackRight = createDerivedRange(fallbackPoints.filter((point) => point.ear === 'right'));
+
+  return {
+    left: normalizeHearingRange(rangeByEar?.left, fallbackLeft),
+    right: normalizeHearingRange(rangeByEar?.right, fallbackRight),
+  };
+}
+
+function logInterpolateFrequency(startFrequency: number, endFrequency: number, progress: number): number {
+  const safeProgress = clamp(progress, 0, 1);
+  const startLog = Math.log(startFrequency);
+  const endLog = Math.log(endFrequency);
+
+  return Math.round(Math.exp(startLog + (endLog - startLog) * safeProgress));
+}
+
+export function getBoundarySweepFrequencyAtProgress(direction: HearingBoundaryDirection, progress: number): number {
+  return direction === 'low'
+    ? logInterpolateFrequency(SOURCE_MIN_FREQUENCY, SOURCE_MAX_FREQUENCY, progress)
+    : logInterpolateFrequency(SOURCE_MAX_FREQUENCY, SOURCE_MIN_FREQUENCY, progress);
 }
 
 export function getFrequencyVolumeProfile(frequency: number): FrequencyVolumeProfile {
@@ -136,6 +251,7 @@ function summarizeEar(points: HearingPoint[]): HearingSummary {
 export function buildHearingProfile(
   points: HearingPoint[],
   calibration: HearingCalibration = DEFAULT_HEARING_CALIBRATION,
+  hearingRange?: Partial<HearingRangeByEar> | null,
 ): HearingProfile {
   const leftPoints = points.filter((point) => point.ear === 'left');
   const rightPoints = points.filter((point) => point.ear === 'right');
@@ -147,6 +263,7 @@ export function buildHearingProfile(
     testedAt: new Date().toISOString(),
     points,
     calibration,
+    hearingRange: normalizeHearingRangeByEar(hearingRange, points),
     leftSummary,
     rightSummary,
     overallScore: Math.round((leftSummary.clarityScore + rightSummary.clarityScore) / 2),
@@ -173,9 +290,17 @@ export function normalizeHearingProfile(profile: HearingProfile | null | undefin
     return null;
   }
 
+  const normalizedHearingRange = profile.hearingRange
+    ? normalizeHearingRangeByEar(profile.hearingRange, profile.points)
+    : {
+        left: legacyRangeForEar(profile, 'left'),
+        right: legacyRangeForEar(profile, 'right'),
+      };
+
   return {
     ...profile,
     calibration: normalizeHearingCalibration(profile.calibration),
+    hearingRange: normalizedHearingRange,
   };
 }
 

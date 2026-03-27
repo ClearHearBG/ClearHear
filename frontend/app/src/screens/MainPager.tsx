@@ -87,14 +87,14 @@ function HomePage() {
   const statusTitle = isRunning ? 'On' : isStarting ? 'Starting' : isStopping ? 'Stopping' : canRetry ? 'Retry' : 'Off';
   const directionalityWarning = getDirectionalityWarning(hearingSupportStatus);
   const statusDescription = isRunning
-    ? `Live amplification is running through ${hearingSupportStatus.selectedOutput?.name ?? 'your headphones'}.`
+    ? `Live audio processing is running through ${hearingSupportStatus.selectedOutput?.name ?? 'your headphones'}.`
     : isStarting
       ? 'Opening the live audio route.'
       : isStopping
-        ? 'Turning live amplification off.'
+        ? 'Turning live audio processing off.'
         : canRetry
-          ? hearingSupportStatus.lastError ?? 'Live support did not start. Tap the circle to try again.'
-          : 'Hearing support is paused. Tap the circle to turn it on.';
+          ? hearingSupportStatus.lastError ?? 'Audio processing did not start. Tap the circle to try again.'
+          : 'Audio processing is paused. Tap the circle to turn it on.';
   const powerIcon = canRetry ? 'refresh' : isRequested ? 'power' : 'power-off';
   const powerColor = isRunning ? theme.accent : isStarting ? theme.secondary : canRetry ? theme.danger : theme.textMuted;
 
@@ -103,14 +103,14 @@ function HomePage() {
       <AnimatedEntrance>
         <View style={styles.centeredHeader}>
           <Text style={[styles.pageTitle, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Listening</Text>
-          <Text style={[styles.pageSubtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>Turn hearing support on when you need it.</Text>
+          <Text style={[styles.pageSubtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>Turn audio processing on when you need it.</Text>
         </View>
       </AnimatedEntrance>
 
       <AnimatedEntrance delay={60} style={styles.homeCenterWrap}>
         <View style={styles.homeCenter}>
           <Pressable
-            accessibilityLabel={isRunning || isStarting ? 'Turn hearing support off' : canRetry ? 'Retry hearing support' : 'Turn hearing support on'}
+            accessibilityLabel={isRunning || isStarting ? 'Turn audio processing off' : canRetry ? 'Retry audio processing' : 'Turn audio processing on'}
             accessibilityRole="button"
             disabled={isHearingSupportBusy}
             onPress={() => {

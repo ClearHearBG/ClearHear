@@ -59,11 +59,19 @@ export interface HearingCalibration {
   boostMultiplier: number;
 }
 
+export interface HearingRange {
+  minFrequency: number | null;
+  maxFrequency: number | null;
+}
+
+export type HearingRangeByEar = Record<EarSide, HearingRange>;
+
 export interface HearingProfile {
   id: string;
   testedAt: string;
   points: HearingPoint[];
   calibration: HearingCalibration;
+  hearingRange: HearingRangeByEar;
   leftSummary: HearingSummary;
   rightSummary: HearingSummary;
   overallScore: number;
