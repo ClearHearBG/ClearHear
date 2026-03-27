@@ -28,7 +28,6 @@ model Transcript {
 
     text     String
     language String
-    duration Float?
 
     chatMessages ChatMessage[]
 
