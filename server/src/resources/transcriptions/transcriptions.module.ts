@@ -10,5 +10,6 @@ import { TranscriptionsService } from "./transcriptions.service";
 	imports: [PrismaModule, ProfilesModule],
 	controllers: [TranscriptionsController],
 	providers: [TranscriptionsService],
+	exports: [TranscriptionsService],
 })
 export class TranscriptionsModule {}
