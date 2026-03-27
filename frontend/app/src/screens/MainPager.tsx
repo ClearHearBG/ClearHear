@@ -292,7 +292,7 @@ function AIPage({ onOpenRecaps }: { onOpenRecaps: () => void }) {
 }
 
 function SettingsPage() {
-  const { logout, preferences, retakeEarTest, setThemeMode, theme } = useAppState();
+  const { clearLocalEarTestData, logout, preferences, retakeEarTest, setThemeMode, theme } = useAppState();
 
   const confirmLogout = () => {
     Alert.alert('Sign out?', 'You will need to sign in again next time.', [
@@ -302,6 +302,19 @@ function SettingsPage() {
         style: 'destructive',
         onPress: () => {
           void logout();
+        },
+      },
+    ]);
+  };
+
+  const confirmClearLocalEarTestData = () => {
+    Alert.alert('Clear local ear test data?', 'This removes all saved ear test data from this device.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: () => {
+          clearLocalEarTestData();
         },
       },
     ]);
@@ -328,6 +341,7 @@ function SettingsPage() {
       <AnimatedEntrance delay={120}>
         <SurfaceCard style={styles.settingsCard} theme={theme}>
           <SettingsRow label="Retake ear test" onPress={retakeEarTest} theme={theme} />
+          <SettingsRow danger label="Clear local ear test data" onPress={confirmClearLocalEarTestData} theme={theme} />
           <SettingsRow danger label="Sign out" onPress={confirmLogout} theme={theme} />
         </SurfaceCard>
       </AnimatedEntrance>

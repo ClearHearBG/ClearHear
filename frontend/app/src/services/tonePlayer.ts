@@ -1,7 +1,6 @@
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Platform } from 'react-native';
 import { Buffer } from 'buffer';
+import { Platform } from 'react-native';
 
 import type { EarSide } from '@/src/types/app';
 
@@ -13,8 +12,17 @@ const FADE_OUT_SECONDS = 0.06;
 
 const toneCache = new Map<string, string>();
 
+type ExpoAvModule = typeof import('expo-av');
+type SoundLike = {
+  stopAsync: () => Promise<unknown>;
+  unloadAsync: () => Promise<unknown>;
+  setOnPlaybackStatusUpdate: (callback: (status: { isLoaded: boolean; didJustFinish?: boolean }) => void) => void;
+};
+
 let audioPrepared = false;
-let activeSound: Audio.Sound | null = null;
+let activeSound: SoundLike | null = null;
+let cachedExpoAvModule: ExpoAvModule | null = null;
+let didWarnAboutMissingAv = false;
 
 function thresholdToAmplitude(threshold: number): number {
   return Math.max(0.03, Math.min(0.42, threshold / 100));
@@ -100,6 +108,26 @@ async function getToneUri(frequency: number, threshold: number, ear: EarSide): P
   return uri;
 }
 
+async function getExpoAvModule(): Promise<ExpoAvModule | null> {
+  if (cachedExpoAvModule) {
+    return cachedExpoAvModule;
+  }
+
+  try {
+    cachedExpoAvModule = await import('expo-av');
+    return cachedExpoAvModule;
+  } catch (error) {
+    if (!didWarnAboutMissingAv) {
+      didWarnAboutMissingAv = true;
+      console.warn(
+        'expo-av is unavailable in this build. Tone playback is disabled until the native app includes the AV module.',
+        error,
+      );
+    }
+    return null;
+  }
+}
+
 async function unloadActiveSound() {
   if (!activeSound) {
     return;
@@ -126,12 +154,17 @@ export async function prepareTonePlayer() {
     return;
   }
 
-  await Audio.setAudioModeAsync({
+  const expoAv = await getExpoAvModule();
+  if (!expoAv) {
+    return;
+  }
+
+  await expoAv.Audio.setAudioModeAsync({
     allowsRecordingIOS: false,
-    interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+    interruptionModeIOS: expoAv.InterruptionModeIOS.DoNotMix,
     playsInSilentModeIOS: true,
     staysActiveInBackground: false,
-    interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+    interruptionModeAndroid: expoAv.InterruptionModeAndroid.DoNotMix,
     shouldDuckAndroid: true,
     playThroughEarpieceAndroid: false,
   });
@@ -148,11 +181,16 @@ export async function playRampedTone({
   frequency: number;
   threshold: number;
 }) {
+  const expoAv = await getExpoAvModule();
+  if (!expoAv) {
+    return;
+  }
+
   await prepareTonePlayer();
   await unloadActiveSound();
 
   const uri = await getToneUri(frequency, threshold, ear);
-  const { sound } = await Audio.Sound.createAsync(
+  const { sound } = await expoAv.Audio.Sound.createAsync(
     { uri },
     {
       shouldPlay: true,
@@ -162,7 +200,7 @@ export async function playRampedTone({
     },
   );
 
-  activeSound = sound;
+  activeSound = sound as SoundLike;
 
   await new Promise<void>((resolve) => {
     sound.setOnPlaybackStatusUpdate((status) => {
