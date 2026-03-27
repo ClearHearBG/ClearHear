@@ -143,7 +143,7 @@ export class TranscriptionsService {
 	}
 
 	async findAll(clerkId: string): Promise<TranscriptionEntity[]> {
-		const profile = await this.profilesService.findByClerkId(clerkId);
+		const profile = await this.profilesService.findOrCreate(clerkId);
 
 		const transcripts = await this.prisma.transcript.findMany({
 			where: { profileId: profile.id },
@@ -156,7 +156,7 @@ export class TranscriptionsService {
 	}
 
 	async findOne(id: string, clerkId: string): Promise<TranscriptionEntity> {
-		const profile = await this.profilesService.findByClerkId(clerkId);
+		const profile = await this.profilesService.findOrCreate(clerkId);
 
 		const transcript = await this.prisma.transcript.findUniqueOrThrow({
 			where: { id, profileId: profile.id },
@@ -166,7 +166,7 @@ export class TranscriptionsService {
 	}
 
 	async remove(id: string, clerkId: string): Promise<TranscriptionEntity> {
-		const profile = await this.profilesService.findByClerkId(clerkId);
+		const profile = await this.profilesService.findOrCreate(clerkId);
 
 		const transcript = await this.prisma.transcript.delete({
 			where: { id, profileId: profile.id },
@@ -176,7 +176,7 @@ export class TranscriptionsService {
 	}
 
 	async removeAll(clerkId: string): Promise<void> {
-		const profile = await this.profilesService.findByClerkId(clerkId);
+		const profile = await this.profilesService.findOrCreate(clerkId);
 
 		await this.prisma.transcript.deleteMany({
 			where: { profileId: profile.id },

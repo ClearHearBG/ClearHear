@@ -11,7 +11,7 @@ export interface ClerkConfig {
 }
 
 export interface LmStudioConfig {
-	baseUrl: string;
+	baseURL: string;
 	apiKey: string;
 	chatModel: string;
 }
@@ -71,7 +71,7 @@ export default (): EnvironmentVariables => {
 		groqApiKey: process.env.GROQ_API_KEY!,
 
 		lmStudio: {
-			baseUrl: process.env.LMSTUDIO_BASE_URL!,
+			baseURL: process.env.LMSTUDIO_BASE_URL!,
 			apiKey: process.env.LMSTUDIO_API_KEY!,
 			chatModel: process.env.LMSTUDIO_CHAT_MODEL!,
 		},
