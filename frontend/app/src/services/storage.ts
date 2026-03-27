@@ -1,79 +1,63 @@
+import * as FileSystem from 'expo-file-system/legacy';
+
 import type { PersistedState } from '@/src/types/app';
 
-const STORAGE_KEY = '@clearhear/app-state/v1';
+const STORAGE_FILE_NAME = 'clearhear-app-state-v1.json';
 
-type StorageLike = {
-  getItem: (key: string) => Promise<string | null>;
-  setItem: (key: string, value: string) => Promise<void>;
-  removeItem: (key: string) => Promise<void>;
-};
+let memoryState: string | null = null;
 
-const memoryStore = new Map<string, string>();
+function getStorageUri(): string | null {
+  const baseDirectory = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
 
-const inMemoryStorage: StorageLike = {
-  async getItem(key) {
-    return memoryStore.get(key) ?? null;
-  },
-  async setItem(key, value) {
-    memoryStore.set(key, value);
-  },
-  async removeItem(key) {
-    memoryStore.delete(key);
-  },
-};
-
-let cachedStorage: StorageLike | null = null;
-let didWarnAboutFallback = false;
-
-async function getStorage(): Promise<StorageLike> {
-  if (cachedStorage) {
-    return cachedStorage;
+  if (!baseDirectory) {
+    return null;
   }
 
-  try {
-    const asyncStorageModule = (await import('@react-native-async-storage/async-storage')) as {
-      default?: StorageLike;
-    };
-
-    if (
-      asyncStorageModule.default &&
-      typeof asyncStorageModule.default.getItem === 'function' &&
-      typeof asyncStorageModule.default.setItem === 'function' &&
-      typeof asyncStorageModule.default.removeItem === 'function'
-    ) {
-      cachedStorage = asyncStorageModule.default;
-      return cachedStorage;
-    }
-  } catch (error) {
-    if (!didWarnAboutFallback) {
-      didWarnAboutFallback = true;
-      console.warn(
-        'AsyncStorage native module is unavailable in this build. Falling back to in-memory storage until the Android app is rebuilt.',
-        error,
-      );
-    }
-  }
-
-  cachedStorage = inMemoryStorage;
-  return cachedStorage;
+  return `${baseDirectory}${STORAGE_FILE_NAME}`;
 }
 
 export async function loadPersistedState(): Promise<PersistedState | null> {
+  const storageUri = getStorageUri();
+
+  if (!storageUri) {
+    return memoryState ? (JSON.parse(memoryState) as PersistedState) : null;
+  }
+
   try {
-    const storage = await getStorage();
-    const raw = await storage.getItem(STORAGE_KEY);
+    const fileInfo = await FileSystem.getInfoAsync(storageUri);
+    if (!fileInfo.exists) {
+      return null;
+    }
+
+    const raw = await FileSystem.readAsStringAsync(storageUri);
     return raw ? (JSON.parse(raw) as PersistedState) : null;
   } catch {
-    return null;
+    return memoryState ? (JSON.parse(memoryState) as PersistedState) : null;
   }
 }
 
 export async function savePersistedState(state: PersistedState): Promise<void> {
-  const storage = await getStorage();
-  await storage.setItem(STORAGE_KEY, JSON.stringify(state));
+  const raw = JSON.stringify(state);
+  memoryState = raw;
+
+  const storageUri = getStorageUri();
+  if (!storageUri) {
+    return;
+  }
+
+  await FileSystem.writeAsStringAsync(storageUri, raw);
 }
 
 export async function clearPersistedState(): Promise<void> {
-  const storage = await getStorage();
-  await storage.removeItem(STORAGE_KEY);
+  memoryState = null;
+
+  const storageUri = getStorageUri();
+  if (!storageUri) {
+    return;
+  }
+
+  const fileInfo = await FileSystem.getInfoAsync(storageUri);
+  if (fileInfo.exists) {
+    await FileSystem.deleteAsync(storageUri, { idempotent: true });
+  }
 }
