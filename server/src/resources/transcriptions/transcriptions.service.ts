@@ -1,4 +1,8 @@
-import { Injectable } from "@nestjs/common";
+import {
+	BadRequestException,
+	Injectable,
+	UnprocessableEntityException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Groq, { toFile } from "groq-sdk";
 
@@ -68,14 +72,33 @@ export class TranscriptionsService {
 		clerkId: string,
 		language: string
 	): Promise<TranscriptionEntity> {
-		const result = (await this.groq.audio.transcriptions.create({
-			file: await toFile(file.buffer, file.originalname, {
-				type: file.mimetype,
-			}),
-			model: "whisper-large-v3",
-			language,
-			response_format: "verbose_json",
-		})) as TranscriptionVerbose;
+		if (!language?.trim()) {
+			throw new BadRequestException("language is required");
+		}
+
+		let result: TranscriptionVerbose;
+
+		try {
+			result = (await this.groq.audio.transcriptions.create({
+				file: await toFile(file.buffer, file.originalname, {
+					type: file.mimetype,
+				}),
+				model: "whisper-large-v3",
+				language,
+				response_format: "verbose_json",
+			})) as TranscriptionVerbose;
+		} catch (error) {
+			if (error instanceof Groq.APIError) {
+				if (error.status === 400) {
+					throw new BadRequestException(error.message);
+				}
+				if (error.status === 422) {
+					throw new UnprocessableEntityException(error.message);
+				}
+			}
+
+			throw error;
+		}
 
 		const goodSegments: TranscriptionSegment[] = [];
 
