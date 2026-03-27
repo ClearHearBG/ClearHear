@@ -1,28 +1,49 @@
-/// <reference types="multer" />
-
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Groq, { toFile } from "groq-sdk";
 
-// The Groq SDK types the transcription response as { text } regardless of
-// response_format. When verbose_json is requested the actual payload includes
-// segments with per-segment confidence metadata — we cast to access them.
-interface VerboseSegment {
-	start: number;
-	end: number;
-	text: string;
-	no_speech_prob: number;
-	avg_logprob: number;
-}
-
-interface VerboseTranscription {
-	text: string;
-	segments?: VerboseSegment[];
-}
-
 import { TranscriptionEntity } from "./entities/transcription.entity";
 
 import { EnvironmentVariables } from "src/config/configuration";
+
+// Field names are per the OpenAI Whisper API specification:
+// https://developers.openai.com/api/reference/resources/audio
+interface TranscriptionSegment {
+	id: number;
+	seek: number;
+	start: number;
+	end: number;
+	text: string;
+	tokens: number[];
+	temperature: number;
+	avg_logprob: number;
+	compression_ratio: number;
+	no_speech_prob: number;
+}
+
+interface TranscriptionWord {
+	word: string;
+	start: number;
+	end: number;
+}
+
+interface TranscriptionVerbose {
+	language: string;
+	duration: number;
+	text: string;
+	segments?: TranscriptionSegment[];
+	words?: TranscriptionWord[];
+}
+
+// Per the Whisper spec, a segment is a hallucination when:
+//   no_speech_prob is high AND avg_logprob < -1  (silence / noise)
+//   compression_ratio > 2.4                       (repetitive / degenerate output)
+//   gap from the previous segment is too large    (hallucination over silence)
+// We stop at the first bad segment — everything after is typically hallucinated too.
+const NO_SPEECH_THRESHOLD = 0.8;
+const AVG_LOGPROB_THRESHOLD = -1;
+const COMPRESSION_RATIO_THRESHOLD = 2.4;
+const MAX_GAP_SECONDS = 10;
 
 @Injectable()
 export class TranscriptionsService {
@@ -48,39 +69,34 @@ export class TranscriptionsService {
 			}),
 			model: "whisper-large-v3",
 			language,
-			// Anchors the model to the target language, reducing hallucinations
-			// and language bleed on unclear or silent segments.
-			prompt: "Транскрипция на български език.",
 			response_format: "verbose_json",
-		})) as VerboseTranscription;
+		})) as TranscriptionVerbose;
 
-		// Whisper hallucinates text on silent/noisy segments. Two signals catch it:
-		//   no_speech_prob — high when the segment is mostly silence or noise
-		//   gap            — a large jump in timestamps signals hallucination over silence
-		// avg_logprob is intentionally excluded: quiet real speech also scores low,
-		// causing legitimate content to be cut off.
-		// We stop at the first bad segment rather than filtering individually, because
-		// everything after the first hallucination is almost always also hallucinated.
-		const NO_SPEECH_THRESHOLD = 0.6;
-		const MAX_GAP_SECONDS = 10;
+		const goodSegments: TranscriptionSegment[] = [];
 
-		const goodSegments: VerboseSegment[] = [];
 		let lastEnd = 0;
 
-		for (const seg of result.segments ?? []) {
-			const gap = seg.start - lastEnd;
-			if (
-				seg.no_speech_prob >= NO_SPEECH_THRESHOLD ||
-				gap > MAX_GAP_SECONDS
-			) {
+		for (const segment of result.segments ?? []) {
+			const isSilent =
+				segment.no_speech_prob >= NO_SPEECH_THRESHOLD &&
+				segment.avg_logprob < AVG_LOGPROB_THRESHOLD;
+
+			const isDegenerate =
+				segment.compression_ratio > COMPRESSION_RATIO_THRESHOLD;
+
+			const hasGap = segment.start - lastEnd > MAX_GAP_SECONDS;
+
+			if (isSilent || isDegenerate || hasGap) {
 				break;
 			}
-			goodSegments.push(seg);
-			lastEnd = seg.end;
+
+			goodSegments.push(segment);
+
+			lastEnd = segment.end;
 		}
 
 		const text = goodSegments
-			.map(seg => seg.text)
+			.map(segment => segment.text)
 			.join("")
 			.trim();
 

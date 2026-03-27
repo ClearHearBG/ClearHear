@@ -1,12 +1,14 @@
 import {
 	Body,
 	Controller,
+	HttpStatus,
+	ParseFilePipeBuilder,
 	Post,
 	UploadedFile,
 	UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { ApiConsumes } from "@nestjs/swagger";
+import { ApiBody, ApiConsumes } from "@nestjs/swagger";
 
 import { ApiPost } from "@decorators";
 
@@ -28,12 +30,19 @@ export class TranscriptionsController {
 	@Post()
 	@ApiPost({ type: TranscriptionEntity })
 	@ApiConsumes("multipart/form-data")
-	@UseInterceptors(
-		FileInterceptor("file", { limits: { fileSize: 25 * 1024 * 1024 } })
-	)
+	@ApiBody({ type: TranscriptionDto })
+	@UseInterceptors(FileInterceptor("file"))
 	async transcribe(
-		@UploadedFile() file: Express.Multer.File,
-		@Body() { language }: TranscriptionDto
+		@UploadedFile(
+			new ParseFilePipeBuilder()
+				.addMaxSizeValidator({ maxSize: 25 * 1024 * 1024 })
+				.build({
+					errorHttpStatusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+					fileIsRequired: true,
+				})
+		)
+		file: Express.Multer.File,
+		@Body("language") language?: string
 	): Promise<TranscriptionEntity> {
 		return this.transcriptionsService.transcribe(file, language);
 	}
