@@ -16,6 +16,7 @@ const unsupportedStatus: HearingSupportStatus = {
   selectedInput: null,
   selectedOutput: null,
   availableInputs: [],
+  availableOutputs: [],
   lastError: 'Live hearing support is only available on Android.',
 };
 

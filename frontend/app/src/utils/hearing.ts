@@ -1,4 +1,4 @@
-import type { EarSide, HearingPoint, HearingProfile, HearingSummary } from '@/src/types/app';
+import type { EarSide, HearingCalibration, HearingPoint, HearingProfile, HearingSummary } from '@/src/types/app';
 
 export const EAR_TEST_FREQUENCIES = [63, 80, 100, 125, 180, 250, 350, 500, 700, 1000, 1400, 2000, 2800, 4000, 5600, 8000, 11000, 14000, 16000] as const;
 export const MIN_TEST_FREQUENCY = EAR_TEST_FREQUENCIES[0];
@@ -7,6 +7,10 @@ export const TEST_EAR_ORDER: EarSide[] = ['left', 'right'];
 export const TEST_THRESHOLD_MIN = 4;
 export const TEST_THRESHOLD_MAX = 64;
 const MAX_HEARD_LOSS_DB = 72;
+export const DEFAULT_HEARING_CALIBRATION: HearingCalibration = {
+  baseGainDb: 6,
+  boostMultiplier: 1,
+};
 
 interface FrequencyVolumeProfile {
   startThreshold: number;
@@ -129,7 +133,10 @@ function summarizeEar(points: HearingPoint[]): HearingSummary {
   };
 }
 
-export function buildHearingProfile(points: HearingPoint[]): HearingProfile {
+export function buildHearingProfile(
+  points: HearingPoint[],
+  calibration: HearingCalibration = DEFAULT_HEARING_CALIBRATION,
+): HearingProfile {
   const leftPoints = points.filter((point) => point.ear === 'left');
   const rightPoints = points.filter((point) => point.ear === 'right');
   const leftSummary = summarizeEar(leftPoints);
@@ -139,9 +146,36 @@ export function buildHearingProfile(points: HearingPoint[]): HearingProfile {
     id: `hearing-${Date.now()}`,
     testedAt: new Date().toISOString(),
     points,
+    calibration,
     leftSummary,
     rightSummary,
     overallScore: Math.round((leftSummary.clarityScore + rightSummary.clarityScore) / 2),
+  };
+}
+
+export function normalizeHearingCalibration(
+  calibration?: Partial<HearingCalibration> | null,
+): HearingCalibration {
+  return {
+    baseGainDb:
+      typeof calibration?.baseGainDb === 'number' && Number.isFinite(calibration.baseGainDb)
+        ? Math.max(0, Math.min(18, calibration.baseGainDb))
+        : DEFAULT_HEARING_CALIBRATION.baseGainDb,
+    boostMultiplier:
+      typeof calibration?.boostMultiplier === 'number' && Number.isFinite(calibration.boostMultiplier)
+        ? Math.max(0.5, Math.min(2.2, calibration.boostMultiplier))
+        : DEFAULT_HEARING_CALIBRATION.boostMultiplier,
+  };
+}
+
+export function normalizeHearingProfile(profile: HearingProfile | null | undefined): HearingProfile | null {
+  if (!profile) {
+    return null;
+  }
+
+  return {
+    ...profile,
+    calibration: normalizeHearingCalibration(profile.calibration),
   };
 }
 

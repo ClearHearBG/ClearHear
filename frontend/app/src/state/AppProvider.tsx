@@ -13,6 +13,7 @@ import {
 import { mockApi } from '@/src/services/mockApi';
 import { loadPersistedState, savePersistedState } from '@/src/services/storage';
 import { createNavigationTheme, themes } from '@/src/theme/theme';
+import { normalizeHearingProfile } from '@/src/utils/hearing';
 import type {
   AppPreferences,
   AssistantMessage,
@@ -26,7 +27,11 @@ const defaultPreferences: AppPreferences = {
   themeMode: 'light',
   isDeviceEnabled: true,
   autoTranscribe: false,
+  preferredInputId: null,
+  preferredOutputId: null,
 };
+
+const HEARING_SUPPORT_PERMISSION_ERROR = 'Microphone permission is required to run live hearing support.';
 
 function normalizeThemeMode(mode: string | undefined | null): ThemeMode {
   if (mode === 'dark' || mode === 'midnight') {
@@ -34,6 +39,20 @@ function normalizeThemeMode(mode: string | undefined | null): ThemeMode {
   }
 
   return 'light';
+}
+
+function normalizeDeviceId(deviceId: number | null | undefined): number | null {
+  return typeof deviceId === 'number' && Number.isFinite(deviceId) ? deviceId : null;
+}
+
+function normalizePreferences(preferences?: Partial<AppPreferences> | null): AppPreferences {
+  return {
+    ...defaultPreferences,
+    ...preferences,
+    themeMode: normalizeThemeMode(preferences?.themeMode),
+    preferredInputId: normalizeDeviceId(preferences?.preferredInputId),
+    preferredOutputId: normalizeDeviceId(preferences?.preferredOutputId),
+  };
 }
 
 function getErrorMessage(error: unknown): string {
@@ -48,6 +67,7 @@ interface AppContextValue {
   navigationTheme: ReturnType<typeof createNavigationTheme>;
   hearingProfile: HearingProfile | null;
   hearingSupportStatus: HearingSupportStatus;
+  isHearingSupportBusy: boolean;
   canCancelEarTest: boolean;
   transcripts: TranscriptRecord[];
   assistantMessages: AssistantMessage[];
@@ -61,6 +81,10 @@ interface AppContextValue {
   toggleDeviceEnabled: () => Promise<void>;
   setThemeMode: (mode: ThemeMode) => Promise<void>;
   setAutoTranscribe: (value: boolean) => Promise<void>;
+  setPreferredInputDevice: (deviceId: number | null) => Promise<void>;
+  setPreferredOutputDevice: (deviceId: number | null) => Promise<void>;
+  previewHearingSupport: (profile: HearingProfile) => Promise<void>;
+  stopPreviewHearingSupport: () => Promise<void>;
   transcribeLastFiveMinutes: () => Promise<void>;
   askAssistant: (question: string) => Promise<void>;
   clearConversationData: () => Promise<void>;
@@ -83,8 +107,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isAskingAssistant, setIsAskingAssistant] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isHearingSupportBusy, setIsHearingSupportBusy] = useState(false);
   const [hearingSupportStatus, setHearingSupportStatus] = useState<HearingSupportStatus>(INITIAL_HEARING_SUPPORT_STATUS);
   const hasHydrated = useRef(false);
+  const preferencesRef = useRef(preferences);
+  const hearingSupportStatusRef = useRef(hearingSupportStatus);
+
+  useEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
+
+  useEffect(() => {
+    hearingSupportStatusRef.current = hearingSupportStatus;
+  }, [hearingSupportStatus]);
 
   useEffect(() => {
     const subscription = addHearingSupportStatusListener((status) => {
@@ -110,15 +145,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       if (persisted) {
         setSession(persisted.session);
-        setPreferences(
-          persisted.preferences
-            ? {
-                ...persisted.preferences,
-                themeMode: normalizeThemeMode(persisted.preferences.themeMode),
-              }
-            : defaultPreferences,
-        );
-        setHearingProfile(persisted.hearingProfile);
+        setPreferences(normalizePreferences(persisted.preferences));
+        setHearingProfile(normalizeHearingProfile(persisted.hearingProfile));
         setEarTestBackup(null);
         setTranscripts(persisted.transcripts ?? []);
         setAssistantMessages(
@@ -157,38 +185,50 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const navigationTheme = useMemo(() => createNavigationTheme(theme), [theme]);
 
   const updatePreferences = async (updater: (current: AppPreferences) => AppPreferences) => {
-    const nextPreferences = updater(preferences);
-    const savedPreferences = await mockApi.savePreferences(nextPreferences);
+    const nextPreferences = normalizePreferences(updater(preferencesRef.current));
+    setPreferences(nextPreferences);
+    const savedPreferences = normalizePreferences(await mockApi.savePreferences(nextPreferences));
     setPreferences(savedPreferences);
+    return savedPreferences;
   };
+
+  const getPermissionErrorStatus = useCallback(async (): Promise<HearingSupportStatus> => {
+    return {
+      ...(await getHearingSupportStatusAsync()),
+      lastError: HEARING_SUPPORT_PERMISSION_ERROR,
+      running: false,
+      stage: 'error',
+    };
+  }, []);
+
+  const ensureHearingSupportPermission = useCallback(async (promptForPermission: boolean) => {
+    return promptForPermission
+      ? requestHearingSupportPermissionAsync()
+      : hasHearingSupportPermissionAsync();
+  }, []);
 
   const syncHearingSupport = useCallback(
     async ({
-      enabled = preferences.isDeviceEnabled,
-      profile = hearingProfile,
+      enabled,
+      profile,
       promptForPermission = false,
+      routePreferences,
     }: {
-      enabled?: boolean;
-      profile?: HearingProfile | null;
+      enabled: boolean;
+      profile: HearingProfile | null;
       promptForPermission?: boolean;
-    } = {}) => {
+      routePreferences?: Pick<AppPreferences, 'preferredInputId' | 'preferredOutputId'>;
+    }) => {
       if (!session || !enabled || !profile) {
         const nextStatus = await stopHearingSupportAsync();
         setHearingSupportStatus(nextStatus);
         return nextStatus;
       }
 
-      const hasPermission = promptForPermission
-        ? await requestHearingSupportPermissionAsync()
-        : await hasHearingSupportPermissionAsync();
+      const hasPermission = await ensureHearingSupportPermission(promptForPermission);
 
       if (!hasPermission) {
-        const nextStatus = {
-          ...(await getHearingSupportStatusAsync()),
-          lastError: 'Microphone permission is required to run live hearing support.',
-          running: false,
-          stage: 'error' as const,
-        };
+        const nextStatus = await getPermissionErrorStatus();
         setHearingSupportStatus(nextStatus);
         return nextStatus;
       }
@@ -201,7 +241,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }));
 
       try {
-        const nextStatus = await startHearingSupportAsync(profile);
+        const nextStatus = await startHearingSupportAsync(profile, {
+          preferredInputId: routePreferences?.preferredInputId ?? preferencesRef.current.preferredInputId,
+          preferredOutputId: routePreferences?.preferredOutputId ?? preferencesRef.current.preferredOutputId,
+        });
         setHearingSupportStatus(nextStatus);
         return nextStatus;
       } catch (error) {
@@ -215,7 +258,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return nextStatus;
       }
     },
-    [hearingProfile, preferences.isDeviceEnabled, session],
+    [ensureHearingSupportPermission, getPermissionErrorStatus, session],
   );
 
   useEffect(() => {
@@ -223,8 +266,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    void syncHearingSupport();
-  }, [hearingProfile, isReady, preferences.isDeviceEnabled, session, syncHearingSupport]);
+    void syncHearingSupport({
+      enabled: preferencesRef.current.isDeviceEnabled,
+      profile: hearingProfile,
+    });
+  }, [hearingProfile, isReady, session, syncHearingSupport]);
 
   const signIn = async (name: string, email: string) => {
     setIsAuthenticating(true);
@@ -254,29 +300,61 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const toggleDeviceEnabled = async () => {
-    if (!preferences.isDeviceEnabled) {
-      const hasPermission = await requestHearingSupportPermissionAsync();
-      if (!hasPermission) {
-        setHearingSupportStatus((current) => ({
-          ...current,
-          lastError: 'Microphone permission is required to run live hearing support.',
-          running: false,
-          stage: 'error',
-        }));
-        return;
-      }
-
-      await updatePreferences((current) => ({
-        ...current,
-        isDeviceEnabled: true,
-      }));
+    if (isHearingSupportBusy) {
       return;
     }
 
-    await updatePreferences((current) => ({
-      ...current,
-      isDeviceEnabled: false,
-    }));
+    const shouldDisable =
+      preferencesRef.current.isDeviceEnabled &&
+      (hearingSupportStatus.stage === 'running' || hearingSupportStatus.stage === 'starting');
+
+    setIsHearingSupportBusy(true);
+
+    try {
+      if (shouldDisable) {
+        const savePreferencesPromise = updatePreferences((current) => ({
+          ...current,
+          isDeviceEnabled: false,
+        }));
+        const nextStatus = await stopHearingSupportAsync();
+        setHearingSupportStatus(nextStatus);
+        await savePreferencesPromise;
+        return;
+      }
+
+      const hasPermission = await ensureHearingSupportPermission(true);
+      if (!hasPermission) {
+        const savePreferencesPromise = updatePreferences((current) => ({
+          ...current,
+          isDeviceEnabled: false,
+        }));
+        const nextStatus = await getPermissionErrorStatus();
+        setHearingSupportStatus(nextStatus);
+        await savePreferencesPromise;
+        return;
+      }
+
+      const enablePreferencesPromise = preferencesRef.current.isDeviceEnabled
+        ? Promise.resolve()
+        : updatePreferences((current) => ({
+            ...current,
+            isDeviceEnabled: true,
+          }));
+
+      if (!session || !hearingProfile) {
+        await enablePreferencesPromise;
+        return;
+      }
+
+      await syncHearingSupport({
+        enabled: true,
+        profile: hearingProfile,
+        promptForPermission: false,
+      });
+      await enablePreferencesPromise;
+    } finally {
+      setIsHearingSupportBusy(false);
+    }
   };
 
   const setThemeMode = async (mode: ThemeMode) => {
@@ -292,6 +370,97 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       autoTranscribe: value,
     }));
   };
+
+  const updateRoutePreference = async (
+    updater: (current: AppPreferences) => AppPreferences,
+  ) => {
+    if (isHearingSupportBusy) {
+      return;
+    }
+
+    setIsHearingSupportBusy(true);
+
+    try {
+      const nextPreferences = await updatePreferences(updater);
+
+      if (!session || !hearingProfile || !nextPreferences.isDeviceEnabled) {
+        return;
+      }
+
+      await syncHearingSupport({
+        enabled: true,
+        profile: hearingProfile,
+        routePreferences: {
+          preferredInputId: nextPreferences.preferredInputId,
+          preferredOutputId: nextPreferences.preferredOutputId,
+        },
+      });
+    } finally {
+      setIsHearingSupportBusy(false);
+    }
+  };
+
+  const setPreferredInputDevice = async (deviceId: number | null) => {
+    await updateRoutePreference((current) => ({
+      ...current,
+      preferredInputId: normalizeDeviceId(deviceId),
+    }));
+  };
+
+  const setPreferredOutputDevice = async (deviceId: number | null) => {
+    await updateRoutePreference((current) => ({
+      ...current,
+      preferredOutputId: normalizeDeviceId(deviceId),
+    }));
+  };
+
+  const previewHearingSupport = useCallback(
+    async (profile: HearingProfile) => {
+      if (!session) {
+        return;
+      }
+
+      const normalizedProfile = normalizeHearingProfile(profile);
+      if (!normalizedProfile) {
+        return;
+      }
+
+      setIsHearingSupportBusy(true);
+
+      try {
+        await syncHearingSupport({
+          enabled: true,
+          profile: normalizedProfile,
+          promptForPermission: true,
+          routePreferences: {
+            preferredInputId: preferencesRef.current.preferredInputId,
+            preferredOutputId: preferencesRef.current.preferredOutputId,
+          },
+        });
+      } finally {
+        setIsHearingSupportBusy(false);
+      }
+    },
+    [session, syncHearingSupport],
+  );
+
+  const stopPreviewHearingSupport = useCallback(async () => {
+    const currentStatus = hearingSupportStatusRef.current;
+    const isActive = currentStatus.stage === 'running' || currentStatus.stage === 'starting';
+
+    if (!isActive) {
+      return;
+    }
+
+    setIsHearingSupportBusy(true);
+
+    try {
+      const nextStatus = await stopHearingSupportAsync();
+      setHearingSupportStatus(nextStatus);
+    } finally {
+      setIsHearingSupportBusy(false);
+    }
+  }, []);
 
   const transcribeLastFiveMinutes = async () => {
     setIsTranscribing(true);
@@ -343,7 +512,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const completeEarTest = async (profile: HearingProfile) => {
     setIsSavingProfile(true);
     try {
-      const savedProfile = await mockApi.saveHearingProfile(profile);
+      const savedProfile = normalizeHearingProfile(await mockApi.saveHearingProfile(profile));
+      if (!savedProfile) {
+        return;
+      }
 
       if (preferences.isDeviceEnabled) {
         const hasPermission = await requestHearingSupportPermissionAsync();
@@ -352,12 +524,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             ...current,
             isDeviceEnabled: false,
           }));
-          setHearingSupportStatus((current) => ({
-            ...current,
-            lastError: 'Microphone permission is required to run live hearing support.',
-            running: false,
-            stage: 'error',
-          }));
+          setHearingSupportStatus(await getPermissionErrorStatus());
         }
       }
 
@@ -390,6 +557,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     navigationTheme,
     hearingProfile,
     hearingSupportStatus,
+    isHearingSupportBusy,
     canCancelEarTest: Boolean(earTestBackup),
     transcripts,
     assistantMessages,
@@ -403,6 +571,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toggleDeviceEnabled,
     setThemeMode,
     setAutoTranscribe,
+    setPreferredInputDevice,
+    setPreferredOutputDevice,
+    previewHearingSupport,
+    stopPreviewHearingSupport,
     transcribeLastFiveMinutes,
     askAssistant,
     clearConversationData,

@@ -23,6 +23,10 @@ export type NativeHearingSupportConfig = {
   points: HearingSupportPoint[];
   maxGainDb?: number;
   bandCount?: number;
+  baseGainDb?: number;
+  boostMultiplier?: number;
+  preferredInputId?: number | null;
+  preferredOutputId?: number | null;
 };
 
 export type HearingSupportStatus = {
@@ -35,6 +39,7 @@ export type HearingSupportStatus = {
   selectedInput: AudioDeviceSummary | null;
   selectedOutput: AudioDeviceSummary | null;
   availableInputs: AudioDeviceSummary[];
+  availableOutputs: AudioDeviceSummary[];
   lastError: string | null;
 };
 

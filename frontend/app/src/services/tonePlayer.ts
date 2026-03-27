@@ -1,4 +1,4 @@
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import { Buffer } from 'buffer';
@@ -7,7 +7,7 @@ import type { EarSide } from '@/src/types/app';
 import { getThresholdAtProgress } from '@/src/utils/hearing';
 
 const SAMPLE_RATE = 44100;
-export const RAMPED_TONE_DURATION_MS = 3200;
+export const RAMPED_TONE_DURATION_MS = 4600;
 
 const TONE_DURATION_SECONDS = RAMPED_TONE_DURATION_MS / 1000;
 const FADE_OUT_SECONDS = 0.06;
@@ -15,7 +15,10 @@ const FADE_OUT_SECONDS = 0.06;
 const toneCache = new Map<string, string>();
 
 let audioPrepared = false;
-let activeSound: Audio.Sound | null = null;
+let activePlayer: ReturnType<typeof createAudioPlayer> | null = null;
+let activePlayerSubscription: { remove: () => void } | null = null;
+let activePlaybackResolve: (() => void) | null = null;
+let activePlaybackTimeout: ReturnType<typeof setTimeout> | null = null;
 let playbackSessionId = 0;
 
 function thresholdToAmplitude(threshold: number): number {
@@ -102,25 +105,39 @@ async function getToneUri(frequency: number, ear: EarSide): Promise<string> {
   return uri;
 }
 
+function disposePlayer(player: ReturnType<typeof createAudioPlayer>) {
+  try {
+    player.pause();
+  } catch {
+    // ignore pause failures
+  }
+
+  try {
+    player.remove();
+  } catch {
+    // ignore remove failures
+  }
+}
+
 async function unloadActiveSound() {
-  if (!activeSound) {
-    return;
+  activePlayerSubscription?.remove();
+  activePlayerSubscription = null;
+
+  if (activePlaybackTimeout) {
+    clearTimeout(activePlaybackTimeout);
+    activePlaybackTimeout = null;
   }
 
-  const sound = activeSound;
-  activeSound = null;
+  const resolvePlayback = activePlaybackResolve;
+  activePlaybackResolve = null;
 
-  try {
-    await sound.stopAsync();
-  } catch {
-    // ignore stop failures
+  if (activePlayer) {
+    const player = activePlayer;
+    activePlayer = null;
+    disposePlayer(player);
   }
 
-  try {
-    await sound.unloadAsync();
-  } catch {
-    // ignore unload failures
-  }
+  resolvePlayback?.();
 }
 
 export async function prepareTonePlayer() {
@@ -128,14 +145,11 @@ export async function prepareTonePlayer() {
     return;
   }
 
-  await Audio.setAudioModeAsync({
-    allowsRecordingIOS: false,
-    interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-    playsInSilentModeIOS: true,
-    staysActiveInBackground: false,
-    interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-    shouldDuckAndroid: true,
-    playThroughEarpieceAndroid: false,
+  await setAudioModeAsync({
+    interruptionMode: 'doNotMix',
+    playsInSilentMode: true,
+    shouldPlayInBackground: false,
+    shouldRouteThroughEarpiece: false,
   });
 
   audioPrepared = true;
@@ -160,50 +174,65 @@ export async function playRampedTone({
     return;
   }
 
-  const { sound } = await Audio.Sound.createAsync(
-    { uri },
-    {
-      shouldPlay: true,
-      positionMillis: 0,
-      progressUpdateIntervalMillis: 80,
-      volume: 1,
-    },
-  );
+  const player = createAudioPlayer(uri, {
+    updateInterval: 80,
+  });
 
   if (sessionId !== playbackSessionId) {
-    try {
-      await sound.stopAsync();
-    } catch {
-      // ignore stop failures
-    }
-
-    try {
-      await sound.unloadAsync();
-    } catch {
-      // ignore unload failures
-    }
+    disposePlayer(player);
 
     return;
   }
 
-  activeSound = sound;
+  player.volume = 1;
+  activePlayer = player;
 
   await new Promise<void>((resolve) => {
-    sound.setOnPlaybackStatusUpdate((status) => {
-      if (sessionId !== playbackSessionId) {
-        void unloadActiveSound().finally(resolve);
+    let resolved = false;
+    let subscription: { remove: () => void } | null = null;
+
+    const finishPlayback = () => {
+      if (resolved) {
         return;
       }
 
-      if (!status.isLoaded) {
-        void unloadActiveSound().finally(resolve);
-        return;
+      resolved = true;
+
+      subscription?.remove();
+      if (activePlayerSubscription === subscription) {
+        activePlayerSubscription = null;
+      }
+      if (activePlaybackResolve === finishPlayback) {
+        activePlaybackResolve = null;
+      }
+      if (activePlaybackTimeout) {
+        clearTimeout(activePlaybackTimeout);
+        activePlaybackTimeout = null;
       }
 
-      if (status.didJustFinish) {
-        void unloadActiveSound().finally(resolve);
+      if (activePlayer === player) {
+        activePlayer = null;
+      }
+
+      disposePlayer(player);
+      resolve();
+    };
+
+    activePlaybackResolve = finishPlayback;
+    activePlaybackTimeout = setTimeout(finishPlayback, RAMPED_TONE_DURATION_MS + 200);
+    subscription = player.addListener('playbackStatusUpdate', (status) => {
+      if (sessionId !== playbackSessionId || status.didJustFinish) {
+        finishPlayback();
       }
     });
+    activePlayerSubscription = subscription;
+
+    if (sessionId !== playbackSessionId) {
+      finishPlayback();
+      return;
+    }
+
+    player.play();
   });
 }
 

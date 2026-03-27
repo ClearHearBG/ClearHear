@@ -27,6 +27,7 @@ function createBaseStatus(lastError: string | null = null): HearingSupportStatus
     selectedInput: null,
     selectedOutput: null,
     availableInputs: [],
+    availableOutputs: [],
     lastError,
   };
 }
@@ -37,10 +38,20 @@ function isAndroid(): boolean {
   return Platform.OS === 'android';
 }
 
-function toNativeConfig(profile: HearingProfile): NativeHearingSupportConfig {
+function toNativeConfig(
+  profile: HearingProfile,
+  routePreferences?: {
+    preferredInputId?: number | null;
+    preferredOutputId?: number | null;
+  },
+): NativeHearingSupportConfig {
   return {
     bandCount: DEFAULT_BAND_COUNT,
+    baseGainDb: profile.calibration.baseGainDb,
+    boostMultiplier: profile.calibration.boostMultiplier,
     maxGainDb: DEFAULT_MAX_GAIN_DB,
+    preferredInputId: routePreferences?.preferredInputId ?? null,
+    preferredOutputId: routePreferences?.preferredOutputId ?? null,
     points: profile.points
       .map((point) => ({
         ear: point.ear,
@@ -90,20 +101,32 @@ export async function getHearingSupportInputDevicesAsync(): Promise<AudioDeviceS
   return ClearHearAudio.getInputDevicesAsync();
 }
 
-export async function startHearingSupportAsync(profile: HearingProfile): Promise<HearingSupportStatus> {
+export async function startHearingSupportAsync(
+  profile: HearingProfile,
+  routePreferences?: {
+    preferredInputId?: number | null;
+    preferredOutputId?: number | null;
+  },
+): Promise<HearingSupportStatus> {
   if (!isAndroid()) {
     return createBaseStatus('Live hearing support is only available on Android.');
   }
 
-  return ClearHearAudio.startAsync(JSON.stringify(toNativeConfig(profile)));
+  return ClearHearAudio.startAsync(JSON.stringify(toNativeConfig(profile, routePreferences)));
 }
 
-export async function updateHearingSupportProfileAsync(profile: HearingProfile): Promise<HearingSupportStatus> {
+export async function updateHearingSupportProfileAsync(
+  profile: HearingProfile,
+  routePreferences?: {
+    preferredInputId?: number | null;
+    preferredOutputId?: number | null;
+  },
+): Promise<HearingSupportStatus> {
   if (!isAndroid()) {
     return createBaseStatus('Live hearing support is only available on Android.');
   }
 
-  return ClearHearAudio.updateProfileAsync(JSON.stringify(toNativeConfig(profile)));
+  return ClearHearAudio.updateProfileAsync(JSON.stringify(toNativeConfig(profile, routePreferences)));
 }
 
 export async function stopHearingSupportAsync(): Promise<HearingSupportStatus> {
