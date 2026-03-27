@@ -42,3 +42,10 @@ app-example
 # generated native folders
 /ios
 /android
+
+# native module build outputs and local Android config
+modules/**/android/build/
+modules/**/ios/build/
+modules/**/.cxx/
+android/.gradle/
+android/local.properties

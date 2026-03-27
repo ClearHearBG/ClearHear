@@ -1,5 +1,6 @@
 import React from 'react';
-import { ActivityIndicator, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Atmosphere } from '@/src/components/primitives';
 import type { AppTheme } from '@/src/theme/theme';

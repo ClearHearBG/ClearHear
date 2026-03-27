@@ -19,7 +19,8 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.clearhear"
     },
     "web": {
       "output": "static",
@@ -39,6 +40,7 @@
           }
         }
       ],
+      "expo-audio",
       "expo-secure-store"
     ],
     "experiments": {

@@ -1,31 +1,28 @@
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Buffer } from 'buffer';
 import { Platform } from 'react-native';
 
 import type { EarSide } from '@/src/types/app';
+import { getThresholdAtProgress } from '@/src/utils/hearing';
 
 const SAMPLE_RATE = 44100;
-export const RAMPED_TONE_DURATION_MS = 3200;
+export const RAMPED_TONE_DURATION_MS = 4600;
 
 const TONE_DURATION_SECONDS = RAMPED_TONE_DURATION_MS / 1000;
 const FADE_OUT_SECONDS = 0.06;
 
 const toneCache = new Map<string, string>();
 
-type ExpoAvModule = typeof import('expo-av');
-type SoundLike = {
-  stopAsync: () => Promise<unknown>;
-  unloadAsync: () => Promise<unknown>;
-  setOnPlaybackStatusUpdate: (callback: (status: { isLoaded: boolean; didJustFinish?: boolean }) => void) => void;
-};
-
 let audioPrepared = false;
-let activeSound: SoundLike | null = null;
-let cachedExpoAvModule: ExpoAvModule | null = null;
-let didWarnAboutMissingAv = false;
+let activePlayer: ReturnType<typeof createAudioPlayer> | null = null;
+let activePlayerSubscription: { remove: () => void } | null = null;
+let activePlaybackResolve: (() => void) | null = null;
+let activePlaybackTimeout: ReturnType<typeof setTimeout> | null = null;
+let playbackSessionId = 0;
 
 function thresholdToAmplitude(threshold: number): number {
-  return Math.max(0.03, Math.min(0.42, threshold / 100));
+  return Math.max(0.015, Math.min(0.42, threshold / 100));
 }
 
 function writeWavHeader(view: DataView, byteLength: number, sampleRate: number) {
@@ -50,8 +47,7 @@ function writeWavHeader(view: DataView, byteLength: number, sampleRate: number) 
   view.setUint32(40, byteLength, true);
 }
 
-function buildRampedToneWave(frequency: number, threshold: number, ear: EarSide): Uint8Array {
-  const maxAmplitude = thresholdToAmplitude(threshold);
+function buildRampedToneWave(frequency: number, ear: EarSide): Uint8Array {
   const frameCount = Math.floor(SAMPLE_RATE * TONE_DURATION_SECONDS);
   const dataLength = frameCount * 4;
   const bytes = new Uint8Array(44 + dataLength);
@@ -64,10 +60,11 @@ function buildRampedToneWave(frequency: number, threshold: number, ear: EarSide)
 
   for (let index = 0; index < frameCount; index += 1) {
     const time = index / SAMPLE_RATE;
-    const rampProgress = index / frameCount;
+    const rampProgress = index / Math.max(1, frameCount - 1);
+    const currentThreshold = getThresholdAtProgress(frequency, rampProgress);
     const fadeOut = index > frameCount - fadeOutFrames ? (frameCount - index) / fadeOutFrames : 1;
-    const envelope = Math.max(0, Math.min(1, rampProgress * fadeOut));
-    const sampleValue = Math.sin(2 * Math.PI * frequency * time) * maxAmplitude * envelope;
+    const envelope = Math.max(0, Math.min(1, fadeOut));
+    const sampleValue = Math.sin(2 * Math.PI * frequency * time) * thresholdToAmplitude(currentThreshold) * envelope;
     const pcm = Math.max(-1, Math.min(1, sampleValue)) * 32767;
 
     view.setInt16(offset, ear === 'left' ? pcm : 0, true);
@@ -78,15 +75,15 @@ function buildRampedToneWave(frequency: number, threshold: number, ear: EarSide)
   return bytes;
 }
 
-async function getToneUri(frequency: number, threshold: number, ear: EarSide): Promise<string> {
-  const cacheKey = `${ear}-${frequency}-${threshold}`;
+async function getToneUri(frequency: number, ear: EarSide): Promise<string> {
+  const cacheKey = `${ear}-${frequency}-progressive-v4`;
   const cachedUri = toneCache.get(cacheKey);
 
   if (cachedUri) {
     return cachedUri;
   }
 
-  const bytes = buildRampedToneWave(frequency, threshold, ear);
+  const bytes = buildRampedToneWave(frequency, ear);
   const base64 = Buffer.from(bytes).toString('base64');
 
   if (Platform.OS === 'web') {
@@ -108,45 +105,39 @@ async function getToneUri(frequency: number, threshold: number, ear: EarSide): P
   return uri;
 }
 
-async function getExpoAvModule(): Promise<ExpoAvModule | null> {
-  if (cachedExpoAvModule) {
-    return cachedExpoAvModule;
+function disposePlayer(player: ReturnType<typeof createAudioPlayer>) {
+  try {
+    player.pause();
+  } catch {
+    // ignore pause failures
   }
 
   try {
-    cachedExpoAvModule = await import('expo-av');
-    return cachedExpoAvModule;
-  } catch (error) {
-    if (!didWarnAboutMissingAv) {
-      didWarnAboutMissingAv = true;
-      console.warn(
-        'expo-av is unavailable in this build. Tone playback is disabled until the native app includes the AV module.',
-        error,
-      );
-    }
-    return null;
+    player.remove();
+  } catch {
+    // ignore remove failures
   }
 }
 
 async function unloadActiveSound() {
-  if (!activeSound) {
-    return;
+  activePlayerSubscription?.remove();
+  activePlayerSubscription = null;
+
+  if (activePlaybackTimeout) {
+    clearTimeout(activePlaybackTimeout);
+    activePlaybackTimeout = null;
   }
 
-  const sound = activeSound;
-  activeSound = null;
+  const resolvePlayback = activePlaybackResolve;
+  activePlaybackResolve = null;
 
-  try {
-    await sound.stopAsync();
-  } catch {
-    // ignore stop failures
+  if (activePlayer) {
+    const player = activePlayer;
+    activePlayer = null;
+    disposePlayer(player);
   }
 
-  try {
-    await sound.unloadAsync();
-  } catch {
-    // ignore unload failures
-  }
+  resolvePlayback?.();
 }
 
 export async function prepareTonePlayer() {
@@ -154,19 +145,11 @@ export async function prepareTonePlayer() {
     return;
   }
 
-  const expoAv = await getExpoAvModule();
-  if (!expoAv) {
-    return;
-  }
-
-  await expoAv.Audio.setAudioModeAsync({
-    allowsRecordingIOS: false,
-    interruptionModeIOS: expoAv.InterruptionModeIOS.DoNotMix,
-    playsInSilentModeIOS: true,
-    staysActiveInBackground: false,
-    interruptionModeAndroid: expoAv.InterruptionModeAndroid.DoNotMix,
-    shouldDuckAndroid: true,
-    playThroughEarpieceAndroid: false,
+  await setAudioModeAsync({
+    interruptionMode: 'doNotMix',
+    playsInSilentMode: true,
+    shouldPlayInBackground: false,
+    shouldRouteThroughEarpiece: false,
   });
 
   audioPrepared = true;
@@ -175,47 +158,85 @@ export async function prepareTonePlayer() {
 export async function playRampedTone({
   ear,
   frequency,
-  threshold,
 }: {
   ear: EarSide;
   frequency: number;
-  threshold: number;
 }) {
-  const expoAv = await getExpoAvModule();
-  if (!expoAv) {
-    return;
-  }
+  const sessionId = playbackSessionId + 1;
+  playbackSessionId = sessionId;
 
   await prepareTonePlayer();
   await unloadActiveSound();
 
-  const uri = await getToneUri(frequency, threshold, ear);
-  const { sound } = await expoAv.Audio.Sound.createAsync(
-    { uri },
-    {
-      shouldPlay: true,
-      positionMillis: 0,
-      progressUpdateIntervalMillis: 80,
-      volume: 1,
-    },
-  );
+  const uri = await getToneUri(frequency, ear);
 
-  activeSound = sound as SoundLike;
+  if (sessionId !== playbackSessionId) {
+    return;
+  }
+
+  const player = createAudioPlayer(uri, {
+    updateInterval: 80,
+  });
+
+  if (sessionId !== playbackSessionId) {
+    disposePlayer(player);
+
+    return;
+  }
+
+  player.volume = 1;
+  activePlayer = player;
 
   await new Promise<void>((resolve) => {
-    sound.setOnPlaybackStatusUpdate((status) => {
-      if (!status.isLoaded) {
-        void unloadActiveSound().finally(resolve);
+    let resolved = false;
+    let subscription: { remove: () => void } | null = null;
+
+    const finishPlayback = () => {
+      if (resolved) {
         return;
       }
 
-      if (status.didJustFinish) {
-        void unloadActiveSound().finally(resolve);
+      resolved = true;
+
+      subscription?.remove();
+      if (activePlayerSubscription === subscription) {
+        activePlayerSubscription = null;
+      }
+      if (activePlaybackResolve === finishPlayback) {
+        activePlaybackResolve = null;
+      }
+      if (activePlaybackTimeout) {
+        clearTimeout(activePlaybackTimeout);
+        activePlaybackTimeout = null;
+      }
+
+      if (activePlayer === player) {
+        activePlayer = null;
+      }
+
+      disposePlayer(player);
+      resolve();
+    };
+
+    activePlaybackResolve = finishPlayback;
+    activePlaybackTimeout = setTimeout(finishPlayback, RAMPED_TONE_DURATION_MS + 200);
+    subscription = player.addListener('playbackStatusUpdate', (status) => {
+      if (sessionId !== playbackSessionId || status.didJustFinish) {
+        finishPlayback();
       }
     });
+    activePlayerSubscription = subscription;
+
+    if (sessionId !== playbackSessionId) {
+      finishPlayback();
+      return;
+    }
+
+    player.play();
   });
 }
 
 export async function stopTonePlayback() {
+  playbackSessionId += 1;
   await unloadActiveSound();
 }
