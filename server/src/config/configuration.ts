@@ -10,10 +10,17 @@ export interface ClerkConfig {
 	authorizedParties: string[];
 }
 
+export interface LmStudioConfig {
+	baseUrl: string;
+	apiKey: string;
+	chatModel: string;
+}
+
 export interface EnvironmentVariables {
 	database: DatabaseConfig;
 	clerk: ClerkConfig;
 	groqApiKey: string;
+	lmStudio: LmStudioConfig;
 }
 
 export const environmentVariablesValidationSchema = Joi.object({
@@ -30,6 +37,11 @@ export const environmentVariablesValidationSchema = Joi.object({
 
 	// Groq API key
 	GROQ_API_KEY: Joi.string().required(),
+
+	// LM Studio credentials
+	LMSTUDIO_BASE_URL: Joi.string().required(),
+	LMSTUDIO_API_KEY: Joi.string().required(),
+	LMSTUDIO_CHAT_MODEL: Joi.string().required(),
 });
 
 export default (): EnvironmentVariables => {
@@ -57,5 +69,11 @@ export default (): EnvironmentVariables => {
 		},
 
 		groqApiKey: process.env.GROQ_API_KEY!,
+
+		lmStudio: {
+			baseUrl: process.env.LMSTUDIO_BASE_URL!,
+			apiKey: process.env.LMSTUDIO_API_KEY!,
+			chatModel: process.env.LMSTUDIO_CHAT_MODEL!,
+		},
 	};
 };
