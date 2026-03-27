@@ -1,4 +1,4 @@
-import Joi from "joi";
+import * as Joi from "joi";
 
 export interface DatabaseConfig {
 	url: string;
@@ -13,6 +13,7 @@ export interface ClerkConfig {
 export interface EnvironmentVariables {
 	database: DatabaseConfig;
 	clerk: ClerkConfig;
+	groqApiKey: string;
 }
 
 export const environmentVariablesValidationSchema = Joi.object({
@@ -21,10 +22,14 @@ export const environmentVariablesValidationSchema = Joi.object({
 	POSTGRES_PASSWORD: Joi.string().required(),
 	POSTGRES_HOST: Joi.string().required(),
 	POSTGRES_DB: Joi.string().required(),
+
 	// Clerk credentials
 	CLERK_SECRET_KEY: Joi.string().required(),
 	CLERK_JWT_KEY: Joi.string().allow("").optional(),
 	CLERK_AUTHORIZED_PARTIES: Joi.string().allow("").optional(),
+
+	// Groq API key
+	GROQ_API_KEY: Joi.string().required(),
 });
 
 export default (): EnvironmentVariables => {
@@ -44,10 +49,13 @@ export default (): EnvironmentVariables => {
 		database: {
 			url: `postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}/${DB_NAME}`,
 		},
+
 		clerk: {
 			secretKey: process.env.CLERK_SECRET_KEY!,
 			jwtKey: clerkJwtKey,
 			authorizedParties: clerkAuthorizedParties,
 		},
+
+		groqApiKey: process.env.GROQ_API_KEY!,
 	};
 };

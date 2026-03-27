@@ -1,3 +1,4 @@
+import { useAuth, useUser } from '@clerk/clerk-expo';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { HearingSupportStatus } from '@/modules/ble-audio';
@@ -33,11 +34,13 @@ const defaultPreferences: AppPreferences = {
 
 const HEARING_SUPPORT_PERMISSION_ERROR = 'Microphone permission is required to run live hearing support.';
 
-function normalizeThemeMode(mode: string | undefined | null): ThemeMode {
-  if (mode === 'dark' || mode === 'midnight') {
-    return 'dark';
-  }
+type EarTestBackupState = {
+  profile: HearingProfile;
+  wasDeviceEnabled: boolean;
+};
 
+function normalizeThemeMode(mode: string | undefined | null): ThemeMode {
+  if (mode === 'dark' || mode === 'midnight') return 'dark';
   return 'light';
 }
 
@@ -53,6 +56,24 @@ function normalizePreferences(preferences?: Partial<AppPreferences> | null): App
     preferredInputId: normalizeDeviceId(preferences?.preferredInputId),
     preferredOutputId: normalizeDeviceId(preferences?.preferredOutputId),
   };
+}
+
+function normalizeProfileMap(
+  profiles?: Record<string, HearingProfile> | null,
+): Record<string, HearingProfile> {
+  if (!profiles) {
+    return {};
+  }
+
+  return Object.entries(profiles).reduce<Record<string, HearingProfile>>((nextProfiles, [userId, profile]) => {
+    const normalizedProfile = normalizeHearingProfile(profile);
+
+    if (normalizedProfile) {
+      nextProfiles[userId] = normalizedProfile;
+    }
+
+    return nextProfiles;
+  }, {});
 }
 
 function getErrorMessage(error: unknown): string {
@@ -76,7 +97,6 @@ interface AppContextValue {
   isTranscribing: boolean;
   isAskingAssistant: boolean;
   isSavingProfile: boolean;
-  signIn: (name: string, email: string) => Promise<void>;
   logout: () => Promise<void>;
   toggleDeviceEnabled: () => Promise<void>;
   setThemeMode: (mode: ThemeMode) => Promise<void>;
@@ -89,6 +109,7 @@ interface AppContextValue {
   askAssistant: (question: string) => Promise<void>;
   clearConversationData: () => Promise<void>;
   completeEarTest: (profile: HearingProfile) => Promise<void>;
+  clearLocalEarTestData: () => void;
   retakeEarTest: () => void;
   cancelEarTest: () => void;
 }
@@ -96,14 +117,17 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
+  const { isSignedIn, signOut } = useAuth();
+  const { user } = useUser();
+
   const [isReady, setIsReady] = useState(false);
-  const [session, setSession] = useState<UserSession | null>(null);
   const [preferences, setPreferences] = useState<AppPreferences>(defaultPreferences);
   const [hearingProfile, setHearingProfile] = useState<HearingProfile | null>(null);
-  const [earTestBackup, setEarTestBackup] = useState<HearingProfile | null>(null);
+  const [earTestBackup, setEarTestBackup] = useState<EarTestBackupState | null>(null);
+  const [earTestProfilesByUser, setEarTestProfilesByUser] = useState<Record<string, HearingProfile>>({});
   const [transcripts, setTranscripts] = useState<TranscriptRecord[]>([]);
-  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([mockApi.buildIntroMessage()]);
-  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([]);
+  const [shouldShowEarTest, setShouldShowEarTest] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isAskingAssistant, setIsAskingAssistant] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -133,27 +157,43 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  const session: UserSession | null = useMemo(() => {
+    if (!isSignedIn || !user) return null;
+
+    return {
+      id: user.id,
+      name:
+        [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+        user.primaryEmailAddress?.emailAddress?.split('@')[0] ||
+        'ClearHear Member',
+      email: user.primaryEmailAddress?.emailAddress ?? '',
+      joinedAt: user.createdAt?.toISOString() ?? new Date().toISOString(),
+    };
+  }, [isSignedIn, user]);
+
   useEffect(() => {
     let isMounted = true;
 
     const hydrate = async () => {
       const persisted = await loadPersistedState();
 
-      if (!isMounted) {
-        return;
-      }
+      if (!isMounted) return;
 
       if (persisted) {
-        setSession(persisted.session);
-        setPreferences(normalizePreferences(persisted.preferences));
-        setHearingProfile(normalizeHearingProfile(persisted.hearingProfile));
+        const normalizedPreferences = normalizePreferences(persisted.preferences);
+        const normalizedProfiles = normalizeProfileMap(persisted.earTestProfilesByUser);
+        const legacyProfile = normalizeHearingProfile(persisted.hearingProfile);
+
+        if (persisted.session?.id && legacyProfile && !normalizedProfiles[persisted.session.id]) {
+          normalizedProfiles[persisted.session.id] = legacyProfile;
+        }
+
+        setPreferences(normalizedPreferences);
+        setHearingProfile(legacyProfile);
         setEarTestBackup(null);
+        setEarTestProfilesByUser(normalizedProfiles);
         setTranscripts(persisted.transcripts ?? []);
-        setAssistantMessages(
-          persisted.assistantMessages?.length > 0
-            ? persisted.assistantMessages
-            : [mockApi.buildIntroMessage(persisted.session?.name)],
-        );
+        setAssistantMessages(persisted.assistantMessages?.length > 0 ? persisted.assistantMessages : []);
       }
 
       hasHydrated.current = true;
@@ -168,18 +208,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!hasHydrated.current) {
+    if (!session || assistantMessages.length > 0) {
       return;
     }
+
+    setAssistantMessages([mockApi.buildIntroMessage(session.name)]);
+  }, [assistantMessages.length, session]);
+
+  useEffect(() => {
+    if (!session) {
+      setHearingProfile(null);
+      setShouldShowEarTest(false);
+      setEarTestBackup(null);
+      return;
+    }
+
+    const nextProfile = earTestProfilesByUser[session.id] ?? null;
+    setHearingProfile(nextProfile);
+
+    if (!nextProfile) {
+      setPreferences((current) =>
+        current.isDeviceEnabled
+          ? normalizePreferences({ ...current, isDeviceEnabled: false })
+          : current,
+      );
+    }
+  }, [earTestProfilesByUser, session]);
+
+  useEffect(() => {
+    if (!hasHydrated.current) return;
 
     void savePersistedState({
       session,
       preferences,
       hearingProfile,
+      earTestProfilesByUser,
       transcripts,
       assistantMessages,
     });
-  }, [assistantMessages, hearingProfile, preferences, session, transcripts]);
+  }, [assistantMessages, earTestProfilesByUser, hearingProfile, preferences, session, transcripts]);
 
   const theme = themes[preferences.themeMode];
   const navigationTheme = useMemo(() => createNavigationTheme(theme), [theme]);
@@ -193,15 +260,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const getPermissionErrorStatus = useCallback(async (): Promise<HearingSupportStatus> => {
+    const baseStatus = await getHearingSupportStatusAsync();
+
     return {
-      ...(await getHearingSupportStatusAsync()),
-      lastError: HEARING_SUPPORT_PERMISSION_ERROR,
+      ...baseStatus,
+      lastError: baseStatus.lastError ?? HEARING_SUPPORT_PERMISSION_ERROR,
       running: false,
       stage: 'error',
     };
   }, []);
 
-  const ensureHearingSupportPermission = useCallback(async (promptForPermission: boolean) => {
+  const ensureHearingSupportPermission = useCallback((promptForPermission: boolean) => {
     return promptForPermission
       ? requestHearingSupportPermissionAsync()
       : hasHearingSupportPermissionAsync();
@@ -272,31 +341,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, [hearingProfile, isReady, session, syncHearingSupport]);
 
-  const signIn = async (name: string, email: string) => {
-    setIsAuthenticating(true);
-    try {
-      const nextSession = await mockApi.login(name, email);
-      setSession(nextSession);
-      setHearingProfile(null);
-      setEarTestBackup(null);
-      setTranscripts([]);
-      setAssistantMessages([mockApi.buildIntroMessage(nextSession.name)]);
-      setPreferences((current) => ({ ...current, isDeviceEnabled: true }));
-    } finally {
-      setIsAuthenticating(false);
-    }
-  };
-
   const logout = async () => {
     const nextStatus = await stopHearingSupportAsync();
     setHearingSupportStatus(nextStatus);
-    await mockApi.logout();
-    setSession(null);
+
+    await signOut();
+
     setHearingProfile(null);
     setEarTestBackup(null);
+    setShouldShowEarTest(false);
     setTranscripts([]);
-    setAssistantMessages([mockApi.buildIntroMessage()]);
-    setPreferences((current) => ({ ...current, isDeviceEnabled: false }));
+    setAssistantMessages([]);
+    setPreferences((current) => normalizePreferences({ ...current, isDeviceEnabled: false }));
   };
 
   const toggleDeviceEnabled = async () => {
@@ -304,9 +360,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    const currentStatus = hearingSupportStatusRef.current;
     const shouldDisable =
       preferencesRef.current.isDeviceEnabled &&
-      (hearingSupportStatus.stage === 'running' || hearingSupportStatus.stage === 'starting');
+      (currentStatus.stage === 'running' || currentStatus.stage === 'starting');
 
     setIsHearingSupportBusy(true);
 
@@ -322,7 +379,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      if (!hearingProfile) {
+        const savePreferencesPromise = updatePreferences((current) => ({
+          ...current,
+          isDeviceEnabled: false,
+        }));
+        setShouldShowEarTest(true);
+        await savePreferencesPromise;
+        return;
+      }
+
       const hasPermission = await ensureHearingSupportPermission(true);
+
       if (!hasPermission) {
         const savePreferencesPromise = updatePreferences((current) => ({
           ...current,
@@ -334,41 +402,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      const enablePreferencesPromise = preferencesRef.current.isDeviceEnabled
-        ? Promise.resolve()
-        : updatePreferences((current) => ({
+      const nextPreferences = preferencesRef.current.isDeviceEnabled
+        ? preferencesRef.current
+        : await updatePreferences((current) => ({
             ...current,
             isDeviceEnabled: true,
           }));
 
-      if (!session || !hearingProfile) {
-        await enablePreferencesPromise;
+      if (!session) {
         return;
       }
 
       await syncHearingSupport({
         enabled: true,
         profile: hearingProfile,
-        promptForPermission: false,
+        routePreferences: {
+          preferredInputId: nextPreferences.preferredInputId,
+          preferredOutputId: nextPreferences.preferredOutputId,
+        },
       });
-      await enablePreferencesPromise;
     } finally {
       setIsHearingSupportBusy(false);
     }
   };
 
   const setThemeMode = async (mode: ThemeMode) => {
-    await updatePreferences((current) => ({
-      ...current,
-      themeMode: normalizeThemeMode(mode),
-    }));
+    await updatePreferences((current) => ({ ...current, themeMode: normalizeThemeMode(mode) }));
   };
 
   const setAutoTranscribe = async (value: boolean) => {
-    await updatePreferences((current) => ({
-      ...current,
-      autoTranscribe: value,
-    }));
+    await updatePreferences((current) => ({ ...current, autoTranscribe: value }));
   };
 
   const updateRoutePreference = async (
@@ -421,6 +484,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       const normalizedProfile = normalizeHearingProfile(profile);
+
       if (!normalizedProfile) {
         return;
       }
@@ -464,6 +528,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const transcribeLastFiveMinutes = async () => {
     setIsTranscribing(true);
+
     try {
       const transcript = await mockApi.transcribeLastFiveMinutes(transcripts.length);
       setTranscripts((current) => [transcript, ...current].slice(0, 12));
@@ -473,15 +538,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const askAssistant = async (question: string) => {
-    const trimmedQuestion = question.trim();
-    if (!trimmedQuestion) {
-      return;
-    }
+    const trimmed = question.trim();
+
+    if (!trimmed) return;
 
     const userMessage: AssistantMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
-      text: trimmedQuestion,
+      text: trimmed,
       createdAt: new Date().toISOString(),
     };
 
@@ -489,7 +553,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setIsAskingAssistant(true);
 
     try {
-      const answer = await mockApi.askConversationAssistant(trimmedQuestion, transcripts);
+      const answer = await mockApi.askConversationAssistant(trimmed, transcripts);
       setAssistantMessages((current) => [
         ...current,
         {
@@ -506,38 +570,86 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const clearConversationData = async () => {
     setTranscripts([]);
-    setAssistantMessages([mockApi.buildIntroMessage(session?.name)]);
+    setAssistantMessages(session ? [mockApi.buildIntroMessage(session.name)] : []);
   };
 
   const completeEarTest = async (profile: HearingProfile) => {
+    const savedProfile = normalizeHearingProfile(profile);
+
+    if (!savedProfile) {
+      return;
+    }
+
     setIsSavingProfile(true);
+    setHearingProfile(savedProfile);
+    setEarTestBackup(null);
+    setShouldShowEarTest(false);
+
+    if (session) {
+      setEarTestProfilesByUser((current) => ({
+        ...current,
+        [session.id]: savedProfile,
+      }));
+    }
+
+    setIsHearingSupportBusy(true);
+
     try {
-      const savedProfile = normalizeHearingProfile(await mockApi.saveHearingProfile(profile));
-      if (!savedProfile) {
+      const hasPermission = await requestHearingSupportPermissionAsync();
+
+      if (!hasPermission) {
+        await updatePreferences((current) => ({
+          ...current,
+          isDeviceEnabled: false,
+        }));
+        setHearingSupportStatus(await getPermissionErrorStatus());
         return;
       }
 
-      if (preferences.isDeviceEnabled) {
-        const hasPermission = await requestHearingSupportPermissionAsync();
-        if (!hasPermission) {
-          await updatePreferences((current) => ({
-            ...current,
-            isDeviceEnabled: false,
-          }));
-          setHearingSupportStatus(await getPermissionErrorStatus());
-        }
+      const nextPreferences = await updatePreferences((current) => ({
+        ...current,
+        isDeviceEnabled: true,
+      }));
+
+      if (!session) {
+        return;
       }
 
-      setHearingProfile(savedProfile);
-      setEarTestBackup(null);
+      await syncHearingSupport({
+        enabled: true,
+        profile: savedProfile,
+        routePreferences: {
+          preferredInputId: nextPreferences.preferredInputId,
+          preferredOutputId: nextPreferences.preferredOutputId,
+        },
+      });
     } finally {
+      setIsHearingSupportBusy(false);
       setIsSavingProfile(false);
     }
   };
 
   const retakeEarTest = () => {
-    setEarTestBackup(hearingProfile);
+    if (!hearingProfile) {
+      setShouldShowEarTest(true);
+      return;
+    }
+
+    setEarTestBackup({
+      profile: hearingProfile,
+      wasDeviceEnabled: preferencesRef.current.isDeviceEnabled,
+    });
     setHearingProfile(null);
+    setShouldShowEarTest(true);
+    setPreferences((current) => normalizePreferences({ ...current, isDeviceEnabled: false }));
+
+    if (session) {
+      setEarTestProfilesByUser((current) => {
+        const nextProfiles = { ...current };
+        delete nextProfiles[session.id];
+        return nextProfiles;
+      });
+    }
   };
 
   const cancelEarTest = () => {
@@ -545,8 +657,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    setHearingProfile(earTestBackup);
+    setHearingProfile(earTestBackup.profile);
+    setShouldShowEarTest(false);
+    setPreferences((current) =>
+      normalizePreferences({
+        ...current,
+        isDeviceEnabled: earTestBackup.wasDeviceEnabled,
+      }),
+    );
+
+    if (session) {
+      setEarTestProfilesByUser((current) => ({
+        ...current,
+        [session.id]: earTestBackup.profile,
+      }));
+    }
+
     setEarTestBackup(null);
+  };
+
+  const clearLocalEarTestData = () => {
+    setHearingProfile(null);
+    setEarTestBackup(null);
+    setShouldShowEarTest(false);
+    setEarTestProfilesByUser({});
+    setPreferences((current) => normalizePreferences({ ...current, isDeviceEnabled: false }));
+    void stopHearingSupportAsync().then(setHearingSupportStatus);
   };
 
   const value: AppContextValue = {
@@ -561,12 +697,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     canCancelEarTest: Boolean(earTestBackup),
     transcripts,
     assistantMessages,
-    needsEarTest: Boolean(session && !hearingProfile),
-    isAuthenticating,
+    needsEarTest: shouldShowEarTest,
+    isAuthenticating: false,
     isTranscribing,
     isAskingAssistant,
     isSavingProfile,
-    signIn,
     logout,
     toggleDeviceEnabled,
     setThemeMode,
@@ -579,6 +714,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     askAssistant,
     clearConversationData,
     completeEarTest,
+    clearLocalEarTestData,
     retakeEarTest,
     cancelEarTest,
   };
@@ -589,9 +725,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 export function useAppState() {
   const context = useContext(AppContext);
 
-  if (!context) {
-    throw new Error('useAppState must be used within AppProvider');
-  }
+  if (!context) throw new Error('useAppState must be used within AppProvider');
 
   return context;
 }

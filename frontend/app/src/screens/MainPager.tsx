@@ -342,6 +342,7 @@ function AIPage({ onOpenRecaps }: { onOpenRecaps: () => void }) {
 
 function SettingsPage() {
   const {
+    clearLocalEarTestData,
     hearingSupportStatus,
     isHearingSupportBusy,
     logout,
@@ -404,6 +405,19 @@ function SettingsPage() {
     ]);
   };
 
+  const confirmClearLocalEarTestData = () => {
+    Alert.alert('Clear local ear test data?', 'This removes all saved ear test data from this device.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: () => {
+          clearLocalEarTestData();
+        },
+      },
+    ]);
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.pageContent} showsVerticalScrollIndicator={false}>
       <AnimatedEntrance>
@@ -460,6 +474,7 @@ function SettingsPage() {
       <AnimatedEntrance delay={180}>
         <SurfaceCard style={styles.settingsCard} theme={theme}>
           <SettingsRow label="Retake ear test" onPress={retakeEarTest} theme={theme} />
+          <SettingsRow danger label="Clear local ear test data" onPress={confirmClearLocalEarTestData} theme={theme} />
           <SettingsRow danger label="Sign out" onPress={confirmLogout} theme={theme} />
         </SurfaceCard>
       </AnimatedEntrance>

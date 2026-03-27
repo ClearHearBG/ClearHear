@@ -73,6 +73,7 @@ export interface PersistedState {
   session: UserSession | null;
   preferences: AppPreferences;
   hearingProfile: HearingProfile | null;
+  earTestProfilesByUser?: Record<string, HearingProfile>;
   transcripts: TranscriptRecord[];
   assistantMessages: AssistantMessage[];
 }

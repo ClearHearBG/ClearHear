@@ -1,7 +1,7 @@
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Platform } from 'react-native';
 import { Buffer } from 'buffer';
+import { Platform } from 'react-native';
 
 import type { EarSide } from '@/src/types/app';
 import { getThresholdAtProgress } from '@/src/utils/hearing';
