@@ -7,3 +7,13 @@ generator client {
 datasource db {
     provider = "postgresql"
 }
+
+model Profile {
+    id String @id @default(uuid())
+
+    /// The Clerk user ID this profile belongs to.
+    clerkId String @unique
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
