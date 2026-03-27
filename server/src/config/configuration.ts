@@ -16,10 +16,14 @@ export interface LmStudioConfig {
 	chatModel: string;
 }
 
+export interface WhisperConfig {
+	baseURL: string;
+}
+
 export interface EnvironmentVariables {
 	database: DatabaseConfig;
 	clerk: ClerkConfig;
-	groqApiKey: string;
+	whisper: WhisperConfig;
 	lmStudio: LmStudioConfig;
 }
 
@@ -35,8 +39,8 @@ export const environmentVariablesValidationSchema = Joi.object({
 	CLERK_JWT_KEY: Joi.string().allow("").optional(),
 	CLERK_AUTHORIZED_PARTIES: Joi.string().allow("").optional(),
 
-	// Groq API key
-	GROQ_API_KEY: Joi.string().required(),
+	// Whisper server
+	WHISPER_BASE_URL: Joi.string().required(),
 
 	// LM Studio credentials
 	LMSTUDIO_BASE_URL: Joi.string().required(),
@@ -68,7 +72,9 @@ export default (): EnvironmentVariables => {
 			authorizedParties: clerkAuthorizedParties,
 		},
 
-		groqApiKey: process.env.GROQ_API_KEY!,
+		whisper: {
+			baseURL: process.env.WHISPER_BASE_URL!,
+		},
 
 		lmStudio: {
 			baseURL: process.env.LMSTUDIO_BASE_URL!,
