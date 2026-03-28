@@ -1,21 +1,10 @@
-import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import { PermissionsAndroid, Platform } from 'react-native';
+
+import ClearHearAudio, { type BufferedAudioExport, type BufferedAudioStatus } from '@/modules/ble-audio';
 
 import type { AudioBufferStatus } from '@/src/types/app';
 
-type ExportedAudioBuffer = {
-  uri: string;
-  name: string;
-  mimeType: string;
-  durationSeconds: number;
-};
-
-type AudioBufferRecorderModule = {
-  start: () => Promise<void>;
-  stop: () => Promise<void>;
-  clear: () => Promise<void>;
-  exportBufferedAudio: () => Promise<ExportedAudioBuffer>;
-  getStatus: () => Promise<AudioBufferStatus>;
-};
+type ExportedAudioBuffer = BufferedAudioExport;
 
 async function ensureRecordAudioPermission() {
   if (Platform.OS !== 'android') {
@@ -37,42 +26,36 @@ async function ensureRecordAudioPermission() {
   }
 }
 
-function getRecorderModule(): AudioBufferRecorderModule | null {
-  const nativeModule = NativeModules.RollingAudioBuffer as AudioBufferRecorderModule | undefined;
-
-  if (Platform.OS !== 'android' || !nativeModule) {
-    return null;
-  }
-
-  return nativeModule;
+function toAudioBufferStatus(status: BufferedAudioStatus): AudioBufferStatus {
+  return {
+    isRecording: status.isRecording,
+    bufferedSeconds: status.bufferedSeconds,
+    maxBufferSeconds: status.maxBufferSeconds,
+    recentInputLevel: status.recentInputLevel,
+    hasRecentInput: status.hasRecentInput,
+  };
 }
 
 export async function startAudioBufferRecorder(): Promise<void> {
-  const recorder = getRecorderModule();
-  if (!recorder) {
+  if (Platform.OS !== 'android') {
     return;
   }
 
   await ensureRecordAudioPermission();
-  await recorder.start();
 }
 
 export async function stopAudioBufferRecorder(): Promise<void> {
-  const recorder = getRecorderModule();
-  if (!recorder) {
+  if (Platform.OS !== 'android') {
     return;
   }
-
-  await recorder.stop();
 }
 
 export async function clearAudioBufferRecorder(): Promise<void> {
-  const recorder = getRecorderModule();
-  if (!recorder) {
+  if (Platform.OS !== 'android') {
     return;
   }
 
-  await recorder.clear();
+  await ClearHearAudio.clearBufferedAudioAsync();
 }
 
 export async function exportAudioBuffer(): Promise<ExportedAudioBuffer> {
@@ -80,17 +63,11 @@ export async function exportAudioBuffer(): Promise<ExportedAudioBuffer> {
     throw new Error('The rolling audio buffer is only available on Android right now.');
   }
 
-  const recorder = getRecorderModule();
-  if (!recorder) {
-    throw new Error('The rolling audio buffer is not available in this Android build yet. Rebuild and reinstall the Android app so the native module is included.');
-  }
-
-  return recorder.exportBufferedAudio();
+  return ClearHearAudio.exportBufferedAudioAsync();
 }
 
 export async function getAudioBufferStatus(): Promise<AudioBufferStatus> {
-  const recorder = getRecorderModule();
-  if (!recorder) {
+  if (Platform.OS !== 'android') {
     return {
       isRecording: false,
       bufferedSeconds: 0,
@@ -100,5 +77,5 @@ export async function getAudioBufferStatus(): Promise<AudioBufferStatus> {
     };
   }
 
-  return recorder.getStatus();
+  return toAudioBufferStatus(await ClearHearAudio.getBufferedAudioStatusAsync());
 }

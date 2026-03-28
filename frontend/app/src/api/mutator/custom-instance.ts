@@ -77,13 +77,8 @@ function addCandidateBaseUrl(target: Set<string>, value: string | null | undefin
 
 function getFallbackApiBaseUrls(): string[] {
   const candidates = new Set<string>();
-  addCandidateBaseUrl(candidates, CONFIGURED_API_BASE_URL);
 
-  if (__DEV__ && Platform.OS === 'android') {
-    // `adb reverse tcp:8393 tcp:8393` makes the phone's localhost point at the computer's backend.
-    addCandidateBaseUrl(candidates, 'http://127.0.0.1:8393');
-    addCandidateBaseUrl(candidates, 'http://localhost:8393');
-  }
+  addCandidateBaseUrl(candidates, CONFIGURED_API_BASE_URL);
 
   return [...candidates];
 }

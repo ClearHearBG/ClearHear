@@ -43,6 +43,21 @@ export type HearingSupportStatus = {
   lastError: string | null;
 };
 
+export type BufferedAudioStatus = {
+  isRecording: boolean;
+  bufferedSeconds: number;
+  maxBufferSeconds: number;
+  recentInputLevel: number;
+  hasRecentInput: boolean;
+};
+
+export type BufferedAudioExport = {
+  uri: string;
+  name: string;
+  mimeType: string;
+  durationSeconds: number;
+};
+
 export type BleAudioModuleEvents = {
   onStateChange: (status: HearingSupportStatus) => void;
 };

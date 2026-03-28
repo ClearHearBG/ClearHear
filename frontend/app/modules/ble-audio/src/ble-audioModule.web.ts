@@ -3,6 +3,8 @@ import { registerWebModule, NativeModule } from 'expo';
 import type {
   AudioDeviceSummary,
   BleAudioModuleEvents,
+  BufferedAudioExport,
+  BufferedAudioStatus,
   HearingSupportStatus,
 } from './ble-audio.types';
 
@@ -27,6 +29,24 @@ class BleAudioModule extends NativeModule<BleAudioModuleEvents> {
 
   async getInputDevicesAsync(): Promise<AudioDeviceSummary[]> {
     return [];
+  }
+
+  async getBufferedAudioStatusAsync(): Promise<BufferedAudioStatus> {
+    return {
+      isRecording: false,
+      bufferedSeconds: 0,
+      maxBufferSeconds: 15,
+      recentInputLevel: 0,
+      hasRecentInput: false,
+    };
+  }
+
+  async exportBufferedAudioAsync(): Promise<BufferedAudioExport> {
+    throw new Error('The rolling audio buffer is only available on Android right now.');
+  }
+
+  async clearBufferedAudioAsync(): Promise<void> {
+    return;
   }
 
   async startAsync(): Promise<HearingSupportStatus> {

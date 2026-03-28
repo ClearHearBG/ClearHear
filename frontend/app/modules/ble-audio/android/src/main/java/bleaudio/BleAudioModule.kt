@@ -19,6 +19,18 @@ class BleAudioModule : Module() {
       requireEngine().getInputDevices()
     }
 
+    AsyncFunction("getBufferedAudioStatusAsync") {
+      requireEngine().getBufferedAudioStatus()
+    }
+
+    AsyncFunction("exportBufferedAudioAsync") {
+      requireEngine().exportBufferedAudio()
+    }
+
+    AsyncFunction("clearBufferedAudioAsync") {
+      requireEngine().clearBufferedAudio()
+    }
+
     AsyncFunction("startAsync") { configJson: String ->
       requireEngine().start(configJson)
     }
