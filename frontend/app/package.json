@@ -2,11 +2,15 @@
   "name": "clearhear",
   "main": "expo-router/entry",
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
-    "start": "expo start",
-    "android": "expo run:android",
+    "start": "expo start --dev-client",
+    "android:reverse": "adb reverse tcp:8393 tcp:8393",
+    "android": "npm run android:reverse && expo run:android",
+    "android:start": "npm run android:reverse && expo start --android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "api:generate": "orval --config orval.config.ts"
   },
   "dependencies": {
     "@clerk/clerk-expo": "^2.19.31",
@@ -20,7 +24,10 @@
     "@react-navigation/native": "^7.2.1",
     "@react-navigation/native-stack": "^7.14.9",
     "@react-navigation/stack": "^7.8.8",
+    "axios": "^1.13.6",
+    "dotenv": "^17.3.1",
     "expo": "~54.0.33",
+    "expo-asset": "~12.0.12",
     "expo-audio": "~1.1.1",
     "expo-auth-session": "~7.0.10",
     "expo-av": "^16.0.8",
@@ -53,6 +60,8 @@
     "@types/react": "~19.1.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
+    "orval": "^7.13.2",
+    "ts-node": "^10.9.2",
     "typescript": "~5.9.2"
   },
   "private": true

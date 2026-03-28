@@ -7,6 +7,7 @@ import configuration, {
 } from "./config/configuration";
 import { PrismaModule } from "./prisma/prisma.module";
 import { ProfilesModule } from "./profiles/profiles.module";
+import { ChatModule } from "./resources/chat/chat.module";
 import { TranscriptionsModule } from "./resources/transcriptions/transcriptions.module";
 
 @Module({
@@ -20,6 +21,7 @@ import { TranscriptionsModule } from "./resources/transcriptions/transcriptions.
 		PrismaModule,
 		ProfilesModule,
 		TranscriptionsModule,
+		ChatModule,
 	],
 })
 export class AppModule {}

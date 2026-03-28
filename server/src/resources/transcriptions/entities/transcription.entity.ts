@@ -35,12 +35,6 @@ export class TranscriptionEntity implements Transcript {
 	language: string;
 
 	/**
-	 * Duration of the audio in seconds.
-	 * @example 42.5
-	 */
-	duration: number | null;
-
-	/**
 	 * The date and time when the transcript was created.
 	 * @example "2024-01-01T00:00:00.000Z"
 	 */

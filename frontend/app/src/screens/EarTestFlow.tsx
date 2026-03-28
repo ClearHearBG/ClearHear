@@ -945,7 +945,7 @@ function CalibrationMetric({
   value: string;
 }) {
   return (
-    <View style={[styles.calibrationMetric, { backgroundColor: theme.elevated, borderColor: theme.border }]}> 
+    <View style={[styles.calibrationMetric, { backgroundColor: theme.elevated, borderColor: theme.border }]}>
       <Text style={[styles.calibrationMetricLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>{label}</Text>
       <Text style={[styles.calibrationMetricValue, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{value}</Text>
     </View>

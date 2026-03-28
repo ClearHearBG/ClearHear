@@ -17,7 +17,10 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.ln
+import kotlin.math.abs
 import kotlin.math.max
 
 private const val DEFAULT_MAX_GAIN_DB = 18.0
@@ -36,6 +39,9 @@ private const val TARGET_WIRED_CHUNK_DURATION_MS = 2
 private const val TARGET_BLUETOOTH_CHUNK_DURATION_MS = 4
 private const val STARTUP_MUTE_CHUNKS = 0
 private const val STARTUP_FADE_CHUNKS = 1
+private const val ROLLING_BUFFER_MAX_SECONDS = 15
+private const val RECENT_INPUT_THRESHOLD = 0.015f
+private const val RECENT_INPUT_WINDOW_MS = 1500L
 
 internal class BleAudioEngine(
   context: Context,
@@ -61,6 +67,12 @@ internal class BleAudioEngine(
   private var bluetoothScoStarted = false
   private var running = false
   private var configRevision = 0
+  private var rollingBuffer = ShortArray(0)
+  private var rollingBufferWriteIndex = 0
+  private var rollingBufferSampleCount = 0
+  private var rollingBufferSampleRate: Int? = null
+  private var recentInputLevel = 0f
+  private var recentInputAtMs = 0L
 
   private val deviceCallback = object : AudioDeviceCallback() {
     override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
@@ -91,6 +103,44 @@ internal class BleAudioEngine(
     synchronized(lock) {
       return listSupportedInputDevicesLocked().mapNotNull(::deviceToMap)
     }
+  }
+
+  fun getBufferedAudioStatus(): Map<String, Any?> {
+    synchronized(lock) {
+      return buildBufferedAudioStatusLocked()
+    }
+  }
+
+  fun clearBufferedAudio() {
+    synchronized(lock) {
+      clearBufferedAudioLocked(resetFormat = false)
+    }
+  }
+
+  fun exportBufferedAudio(): Map<String, Any> {
+    val sampleRate: Int
+    val samples: ShortArray
+
+    synchronized(lock) {
+      sampleRate = rollingBufferSampleRate
+        ?: throw IllegalStateException("No rolling audio is available yet. Turn listening on and try again in a few seconds.")
+
+      if (rollingBufferSampleCount <= 0) {
+        throw IllegalStateException("No rolling audio is available yet. Turn listening on and try again in a few seconds.")
+      }
+
+      samples = copyBufferedAudioLocked()
+    }
+
+    val file = File(appContext.cacheDir, "clearhear-recap-${System.currentTimeMillis()}.wav")
+    writeWavFile(file, samples, sampleRate)
+
+    return mapOf(
+      "uri" to "file://${file.absolutePath}",
+      "name" to file.name,
+      "mimeType" to "audio/wav",
+      "durationSeconds" to (samples.size.toDouble() / sampleRate.toDouble()),
+    )
   }
 
   fun start(configJson: String): Map<String, Any?> {
@@ -147,6 +197,7 @@ internal class BleAudioEngine(
       activeInputChannels = formatChoice.inputChannels
       activeSampleRate = formatChoice.sampleRate
       activeBufferFrames = formatChoice.processingChunkFrames
+      prepareRollingBufferLocked(formatChoice.sampleRate)
       selectedInput = inputDevice
       selectedOutput = outputDevice
       audioRecord = record
@@ -269,6 +320,7 @@ internal class BleAudioEngine(
       val rightInput = FloatArray(formatChoice.processingChunkFrames)
       val leftOutput = FloatArray(formatChoice.processingChunkFrames)
       val rightOutput = FloatArray(formatChoice.processingChunkFrames)
+      val recapBuffer = ShortArray(formatChoice.processingChunkFrames)
 
       synchronized(lock) {
         if (running) {
@@ -298,16 +350,22 @@ internal class BleAudioEngine(
 
         val framesRead = samplesRead / runtimeInputChannels
         var inputIndex = 0
+        var inputPeak = 0f
 
         for (frame in 0 until framesRead) {
           if (runtimeInputChannels == 2 && inputIndex + 1 < samplesRead) {
             leftInput[frame] = pcm16ToFloat(inputBuffer[inputIndex])
             rightInput[frame] = pcm16ToFloat(inputBuffer[inputIndex + 1])
             inputIndex += 2
+            recapBuffer[frame] = floatToPcm16(clampAudio((leftInput[frame] + rightInput[frame]) * 0.5f))
+            inputPeak = max(inputPeak, max(abs(leftInput[frame]), abs(rightInput[frame])))
           } else {
             val sharedInput = pcm16ToFloat(inputBuffer[inputIndex])
             leftInput[frame] = sharedInput
+            rightInput[frame] = sharedInput
             inputIndex += 1
+            recapBuffer[frame] = floatToPcm16(sharedInput)
+            inputPeak = max(inputPeak, abs(sharedInput))
           }
         }
 
@@ -338,6 +396,10 @@ internal class BleAudioEngine(
           outputBuffer[outputIndex] = floatToPcm16(outputLeft)
           outputBuffer[outputIndex + 1] = floatToPcm16(outputRight)
           outputIndex += 2
+        }
+
+        synchronized(lock) {
+          appendRollingAudioLocked(recapBuffer, framesRead, inputPeak)
         }
 
         writeToTrack(track, outputBuffer, framesRead * 2)
@@ -373,6 +435,9 @@ internal class BleAudioEngine(
           currentStage = "idle"
           clearActiveRouteLocked()
         }
+
+        recentInputLevel = 0f
+        recentInputAtMs = 0L
 
         emitStatusLocked()
       }
@@ -967,6 +1032,25 @@ internal class BleAudioEngine(
     )
   }
 
+  private fun buildBufferedAudioStatusLocked(): Map<String, Any?> {
+    val sampleRate = rollingBufferSampleRate
+    val bufferedSeconds = if (sampleRate != null && sampleRate > 0) {
+      rollingBufferSampleCount.toDouble() / sampleRate.toDouble()
+    } else {
+      0.0
+    }
+    val recentWindowActive = recentInputAtMs > 0L && (System.currentTimeMillis() - recentInputAtMs) <= RECENT_INPUT_WINDOW_MS
+    val visibleRecentInputLevel = if (recentWindowActive) recentInputLevel.toDouble() else 0.0
+
+    return mapOf(
+      "isRecording" to (currentStage == "running" || currentStage == "starting"),
+      "bufferedSeconds" to bufferedSeconds,
+      "maxBufferSeconds" to ROLLING_BUFFER_MAX_SECONDS,
+      "recentInputLevel" to visibleRecentInputLevel,
+      "hasRecentInput" to (recentWindowActive && visibleRecentInputLevel >= RECENT_INPUT_THRESHOLD),
+    )
+  }
+
   private fun emitAndReturnStatusLocked(): Map<String, Any?> {
     val status = buildStatusLocked()
     onStatusChange(status)
@@ -981,6 +1065,67 @@ internal class BleAudioEngine(
 
   private fun emitStatusLocked() {
     onStatusChange(buildStatusLocked())
+  }
+
+  private fun prepareRollingBufferLocked(sampleRate: Int) {
+    val capacity = (sampleRate * ROLLING_BUFFER_MAX_SECONDS).coerceAtLeast(sampleRate)
+    if (rollingBuffer.size != capacity) {
+      rollingBuffer = ShortArray(capacity)
+    }
+    rollingBufferSampleRate = sampleRate
+    rollingBufferWriteIndex = 0
+    rollingBufferSampleCount = 0
+    recentInputLevel = 0f
+    recentInputAtMs = 0L
+  }
+
+  private fun clearBufferedAudioLocked(resetFormat: Boolean) {
+    if (rollingBuffer.isNotEmpty()) {
+      rollingBuffer.fill(0)
+    }
+    rollingBufferWriteIndex = 0
+    rollingBufferSampleCount = 0
+    recentInputLevel = 0f
+    recentInputAtMs = 0L
+    if (resetFormat) {
+      rollingBufferSampleRate = null
+      rollingBuffer = ShortArray(0)
+    }
+  }
+
+  private fun appendRollingAudioLocked(samples: ShortArray, sampleCount: Int, peakLevel: Float) {
+    if (rollingBuffer.isEmpty() || sampleCount <= 0) {
+      return
+    }
+
+    for (index in 0 until sampleCount) {
+      rollingBuffer[rollingBufferWriteIndex] = samples[index]
+      rollingBufferWriteIndex = (rollingBufferWriteIndex + 1) % rollingBuffer.size
+      if (rollingBufferSampleCount < rollingBuffer.size) {
+        rollingBufferSampleCount += 1
+      }
+    }
+
+    recentInputLevel = peakLevel.coerceIn(0f, 1f)
+    if (peakLevel >= RECENT_INPUT_THRESHOLD) {
+      recentInputAtMs = System.currentTimeMillis()
+    }
+  }
+
+  private fun copyBufferedAudioLocked(): ShortArray {
+    val sampleCount = rollingBufferSampleCount
+    if (sampleCount <= 0 || rollingBuffer.isEmpty()) {
+      return ShortArray(0)
+    }
+
+    val copy = ShortArray(sampleCount)
+    val startIndex = if (sampleCount == rollingBuffer.size) rollingBufferWriteIndex else 0
+
+    for (index in 0 until sampleCount) {
+      copy[index] = rollingBuffer[(startIndex + index) % rollingBuffer.size]
+    }
+
+    return copy
   }
 
   private fun clearActiveRouteLocked() {
@@ -1166,6 +1311,57 @@ internal class BleAudioEngine(
     return points.filter { it.ear == ear }
       .sortedBy { it.frequencyHz }
       .map { GainPoint(it.frequencyHz, it.lossDb) }
+  }
+
+  private fun writeWavFile(file: File, samples: ShortArray, sampleRate: Int) {
+    val dataSize = samples.size * SHORT_BYTES
+    val header = ByteArray(44)
+    writeAscii(header, 0, "RIFF")
+    writeInt32LE(header, 4, 36 + dataSize)
+    writeAscii(header, 8, "WAVE")
+    writeAscii(header, 12, "fmt ")
+    writeInt32LE(header, 16, 16)
+    writeInt16LE(header, 20, 1)
+    writeInt16LE(header, 22, 1)
+    writeInt32LE(header, 24, sampleRate)
+    writeInt32LE(header, 28, sampleRate * SHORT_BYTES)
+    writeInt16LE(header, 32, SHORT_BYTES)
+    writeInt16LE(header, 34, 16)
+    writeAscii(header, 36, "data")
+    writeInt32LE(header, 40, dataSize)
+
+    FileOutputStream(file).use { output ->
+      output.write(header)
+
+      val payload = ByteArray(dataSize)
+      var offset = 0
+      for (sample in samples) {
+        payload[offset] = (sample.toInt() and 0xFF).toByte()
+        payload[offset + 1] = ((sample.toInt() shr 8) and 0xFF).toByte()
+        offset += SHORT_BYTES
+      }
+
+      output.write(payload)
+      output.flush()
+    }
+  }
+
+  private fun writeAscii(target: ByteArray, offset: Int, value: String) {
+    for (index in value.indices) {
+      target[offset + index] = value[index].code.toByte()
+    }
+  }
+
+  private fun writeInt16LE(target: ByteArray, offset: Int, value: Int) {
+    target[offset] = (value and 0xFF).toByte()
+    target[offset + 1] = ((value shr 8) and 0xFF).toByte()
+  }
+
+  private fun writeInt32LE(target: ByteArray, offset: Int, value: Int) {
+    target[offset] = (value and 0xFF).toByte()
+    target[offset + 1] = ((value shr 8) and 0xFF).toByte()
+    target[offset + 2] = ((value shr 16) and 0xFF).toByte()
+    target[offset + 3] = ((value shr 24) and 0xFF).toByte()
   }
 
   private fun readFromRecord(record: AudioRecord, buffer: ShortArray): Int {
