@@ -99,7 +99,7 @@ function HomePage() {
   const statusTitle = isRunning ? 'On' : isStarting ? 'Starting' : isStopping ? 'Stopping' : canRetry ? 'Retry' : 'Off';
   const directionalityWarning = getDirectionalityWarning(hearingSupportStatus);
   const statusDescription = isRunning
-    ? `Live audio processing is running through ${hearingSupportStatus.selectedOutput?.name ?? 'your headphones'}.`
+    ? ''
     : isStarting
       ? 'Opening the live audio route.'
       : isStopping
