@@ -1,6 +1,7 @@
 package bleaudio
 
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.floor
@@ -19,6 +20,13 @@ private const val SPECTRAL_WINDOW_SIZE = 1024
 private const val SPECTRAL_HOP_SIZE = SPECTRAL_WINDOW_SIZE / 4
 private const val INVERSE_MAP_EPSILON = 1e-6
 private const val NORMALIZATION_EPSILON = 1e-9
+private const val NOISE_FILTER_HIGH_PASS_HZ = 90.0
+private const val NOISE_FILTER_Q = 0.707
+private const val NOISE_GATE_THRESHOLD = 0.018f
+private const val NOISE_GATE_KNEE = 0.03f
+private const val NOISE_GATE_MIN_GAIN = 0.22f
+private const val NOISE_GATE_ATTACK_MS = 5.0
+private const val NOISE_GATE_RELEASE_MS = 120.0
 
 internal data class HearingRangeConfig(
   val ear: String,
@@ -57,10 +65,11 @@ internal class StereoAudioProcessor(
   sharedRange: HearingFrequencyRange?,
   filterBanks: StereoFilterBank,
   outputGain: Float,
+  noiseFilteringEnabled: Boolean,
 ) {
-  private val leftProcessor = ChannelAudioProcessor(sampleRate, leftRange, filterBanks.left, outputGain)
-  private val rightProcessor = ChannelAudioProcessor(sampleRate, rightRange, filterBanks.right, outputGain)
-  private val sharedProcessor = ChannelAudioProcessor(sampleRate, sharedRange, filterBanks.shared, outputGain)
+  private val leftProcessor = ChannelAudioProcessor(sampleRate, leftRange, filterBanks.left, outputGain, noiseFilteringEnabled)
+  private val rightProcessor = ChannelAudioProcessor(sampleRate, rightRange, filterBanks.right, outputGain, noiseFilteringEnabled)
+  private val sharedProcessor = ChannelAudioProcessor(sampleRate, sharedRange, filterBanks.shared, outputGain, noiseFilteringEnabled)
 
   fun processStereo(
     leftInput: FloatArray,
@@ -89,8 +98,10 @@ internal class ChannelAudioProcessor(
   hearingRange: HearingFrequencyRange?,
   private val filterBank: FilterBank,
   private val outputGain: Float,
+  noiseFilteringEnabled: Boolean,
 ) {
   private val spectralProcessor = hearingRange?.let { FrequencyWarpStreamProcessor(sampleRate, it) }
+  private val noiseReductionProcessor = if (noiseFilteringEnabled) NoiseReductionProcessor(sampleRate) else null
   private var spectralScratch = FloatArray(0)
 
   fun process(input: FloatArray, frameCount: Int, output: FloatArray) {
@@ -106,8 +117,38 @@ internal class ChannelAudioProcessor(
     }
 
     for (index in 0 until frameCount) {
-      output[index] = (filterBank.process(processedInput[index]) * outputGain).coerceIn(-1f, 1f)
+      val amplifiedSample = filterBank.process(processedInput[index]) * outputGain
+      output[index] = (noiseReductionProcessor?.process(amplifiedSample) ?: amplifiedSample).coerceIn(-1f, 1f)
     }
+  }
+}
+
+internal class NoiseReductionProcessor(sampleRate: Int) {
+  private val highPassFilter = BiquadFilter(BiquadCoefficients.highPass(sampleRate.toDouble(), NOISE_FILTER_HIGH_PASS_HZ, NOISE_FILTER_Q))
+  private val attackCoefficient = timeConstantToCoefficient(NOISE_GATE_ATTACK_MS, sampleRate)
+  private val releaseCoefficient = timeConstantToCoefficient(NOISE_GATE_RELEASE_MS, sampleRate)
+  private var envelope = 0f
+
+  fun process(sample: Float): Float {
+    val filteredSample = highPassFilter.process(sample)
+    val absoluteSample = abs(filteredSample)
+
+    envelope = if (absoluteSample > envelope) {
+      attackCoefficient * envelope + (1f - attackCoefficient) * absoluteSample
+    } else {
+      releaseCoefficient * envelope + (1f - releaseCoefficient) * absoluteSample
+    }
+
+    val gateGain = when {
+      envelope <= NOISE_GATE_THRESHOLD -> NOISE_GATE_MIN_GAIN
+      envelope >= NOISE_GATE_THRESHOLD + NOISE_GATE_KNEE -> 1f
+      else -> {
+        val normalized = ((envelope - NOISE_GATE_THRESHOLD) / NOISE_GATE_KNEE).coerceIn(0f, 1f)
+        NOISE_GATE_MIN_GAIN + normalized * (1f - NOISE_GATE_MIN_GAIN)
+      }
+    }
+
+    return filteredSample * gateGain
   }
 }
 
@@ -412,6 +453,11 @@ private fun sampleInterpolated(values: DoubleArray, position: Double): Double {
   val upperIndex = min(lowerIndex + 1, values.lastIndex)
   val ratio = (position - lowerIndex).coerceIn(0.0, 1.0)
   return values[lowerIndex] + (values[upperIndex] - values[lowerIndex]) * ratio
+}
+
+private fun timeConstantToCoefficient(timeMs: Double, sampleRate: Int): Float {
+  val timeSeconds = max(timeMs, 1.0) / 1000.0
+  return exp((-1.0 / (sampleRate * timeSeconds)).coerceAtMost(-1e-9)).toFloat()
 }
 
 private fun fft(real: DoubleArray, imag: DoubleArray, inverse: Boolean) {

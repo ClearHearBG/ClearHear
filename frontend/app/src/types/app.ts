@@ -14,6 +14,9 @@ export interface UserSession {
 export interface AppPreferences {
   themeMode: ThemeMode;
   isDeviceEnabled: boolean;
+  isAmplificationEnabled: boolean;
+  isFrequencyMappingEnabled: boolean;
+  isNoiseFilteringEnabled: boolean;
   autoTranscribe: boolean;
   preferredInputId: number | null;
   preferredOutputId: number | null;

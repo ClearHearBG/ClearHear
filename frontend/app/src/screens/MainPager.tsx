@@ -1,5 +1,5 @@
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -14,9 +14,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BottomBar } from '@/src/components/BottomBar';
+import { TuningSlider } from '@/src/components/TuningSlider';
 import { ActionButton, AnimatedEntrance, Atmosphere, Pill, SurfaceCard } from '@/src/components/primitives';
 import type { AudioDeviceSummary } from '@/modules/ble-audio';
 import { useAppState } from '@/src/state/AppProvider';
+import { DEFAULT_HEARING_CALIBRATION, normalizeHearingCalibration } from '@/src/utils/hearing';
 import { formatRelative, formatTime } from '@/src/utils/format';
 
 const TAB_ITEMS = [
@@ -78,7 +80,16 @@ export function MainPager() {
 }
 
 function HomePage() {
-  const { hearingSupportStatus, isHearingSupportBusy, preferences, theme, toggleDeviceEnabled } = useAppState();
+  const {
+    hearingSupportStatus,
+    isHearingSupportBusy,
+    preferences,
+    setAmplificationEnabled,
+    setFrequencyMappingEnabled,
+    setNoiseFilteringEnabled,
+    theme,
+    toggleDeviceEnabled,
+  } = useAppState();
   const isRequested = preferences.isDeviceEnabled;
   const isRunning = hearingSupportStatus.stage === 'running';
   const isStarting = hearingSupportStatus.stage === 'starting';
@@ -94,16 +105,21 @@ function HomePage() {
         ? 'Turning live audio processing off.'
         : canRetry
           ? hearingSupportStatus.lastError ?? 'Audio processing did not start. Tap the circle to try again.'
-          : 'Audio processing is paused. Tap the circle to turn it on.';
+          : '';
   const powerIcon = canRetry ? 'refresh' : isRequested ? 'power' : 'power-off';
   const powerColor = isRunning ? theme.accent : isStarting ? theme.secondary : canRetry ? theme.danger : theme.textMuted;
+  const togglesEnabled = isRequested;
 
   return (
     <View style={[styles.pageContent, styles.homePageContent]}>
       <AnimatedEntrance>
         <View style={styles.centeredHeader}>
           <Text style={[styles.pageTitle, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Listening</Text>
-          <Text style={[styles.pageSubtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>Turn audio processing on when you need it.</Text>
+          <Text style={[styles.pageSubtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>
+            {isRunning || isStarting
+              ? `Running through ${hearingSupportStatus.selectedOutput?.name ?? 'your headphones'}.`
+              : 'Turn audio processing on when you need it.'}
+          </Text>
         </View>
       </AnimatedEntrance>
 
@@ -124,9 +140,44 @@ function HomePage() {
               </View>
           </Pressable>
           <Text style={[styles.statusText, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>{statusTitle}</Text>
-          <Text style={[styles.statusSubtext, { color: theme.textMuted, fontFamily: theme.fonts.body }]}> 
-            {statusDescription}
-          </Text>
+          {statusDescription ? (
+            <Text style={[styles.statusSubtext, { color: theme.textMuted, fontFamily: theme.fonts.body }]}> 
+              {statusDescription}
+            </Text>
+          ) : null}
+
+          <View style={styles.homeToggles}>
+            <HomeModeToggle
+              disabled={isHearingSupportBusy || !togglesEnabled}
+              label="Sound amplification"
+              onToggle={() => {
+                void setAmplificationEnabled(!preferences.isAmplificationEnabled);
+              }}
+              theme={theme}
+              value={preferences.isAmplificationEnabled}
+              visuallyMuted={!togglesEnabled}
+            />
+            <HomeModeToggle
+              disabled={isHearingSupportBusy || !togglesEnabled}
+              label="Frequency band mapping"
+              onToggle={() => {
+                void setFrequencyMappingEnabled(!preferences.isFrequencyMappingEnabled);
+              }}
+              theme={theme}
+              value={preferences.isFrequencyMappingEnabled}
+              visuallyMuted={!togglesEnabled}
+            />
+            <HomeModeToggle
+              disabled={isHearingSupportBusy || !togglesEnabled}
+              label="Noise filtering"
+              onToggle={() => {
+                void setNoiseFilteringEnabled(!preferences.isNoiseFilteringEnabled);
+              }}
+              theme={theme}
+              value={preferences.isNoiseFilteringEnabled}
+              visuallyMuted={!togglesEnabled}
+            />
+          </View>
 
           {isRequested && directionalityWarning ? (
             <SurfaceCard style={styles.warningCard} theme={theme}>
@@ -140,6 +191,69 @@ function HomePage() {
         </View>
       </AnimatedEntrance>
     </View>
+  );
+}
+
+function HomeModeToggle({
+  disabled,
+  label,
+  onToggle,
+  theme,
+  value,
+  visuallyMuted = false,
+}: {
+  disabled: boolean;
+  label: string;
+  onToggle: () => void;
+  theme: ReturnType<typeof useAppState>['theme'];
+  value: boolean;
+  visuallyMuted?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="switch"
+      accessibilityState={{ checked: value, disabled }}
+      disabled={disabled}
+      onPress={onToggle}
+      style={({ pressed }) => [
+        styles.homeToggleCard,
+        {
+          backgroundColor: theme.card,
+          borderColor: visuallyMuted ? theme.border : value ? theme.accent : theme.border,
+          opacity: disabled ? 0.46 : pressed ? 0.9 : 1,
+        },
+      ]}>
+      <View style={styles.homeToggleBody}>
+        <Text
+          style={[
+            styles.homeToggleLabel,
+            {
+              color: visuallyMuted ? theme.textMuted : theme.text,
+              fontFamily: theme.fonts.bodySemiBold,
+            },
+          ]}>
+          {label}
+        </Text>
+      </View>
+      <View
+        style={[
+          styles.homeToggleTrack,
+          {
+            backgroundColor: visuallyMuted ? theme.elevated : value ? theme.accentSoft : theme.elevated,
+            borderColor: visuallyMuted ? theme.border : value ? theme.accent : theme.border,
+          },
+        ]}>
+        <View
+          style={[
+            styles.homeToggleThumb,
+            {
+              backgroundColor: visuallyMuted ? theme.tabIconMuted : value ? theme.accent : theme.textMuted,
+              alignSelf: value ? 'flex-end' : 'flex-start',
+            },
+          ]}
+        />
+      </View>
+    </Pressable>
   );
 }
 
@@ -343,6 +457,7 @@ function AIPage({ onOpenRecaps }: { onOpenRecaps: () => void }) {
 function SettingsPage() {
   const {
     clearLocalEarTestData,
+    hearingProfile,
     hearingSupportStatus,
     isHearingSupportBusy,
     logout,
@@ -352,8 +467,38 @@ function SettingsPage() {
     setPreferredOutputDevice,
     setThemeMode,
     theme,
+    updateHearingCalibration,
   } = useAppState();
   const [expandedSelector, setExpandedSelector] = useState<'input' | 'output' | null>(null);
+  const calibration = hearingProfile?.calibration;
+  const [settingsCalibration, setSettingsCalibration] = useState(() =>
+    normalizeHearingCalibration(hearingProfile?.calibration ?? DEFAULT_HEARING_CALIBRATION),
+  );
+
+  useEffect(() => {
+    setSettingsCalibration(normalizeHearingCalibration(hearingProfile?.calibration ?? DEFAULT_HEARING_CALIBRATION));
+  }, [hearingProfile?.calibration]);
+
+  useEffect(() => {
+    if (!calibration) {
+      return;
+    }
+
+    if (
+      calibration.baseGainDb === settingsCalibration.baseGainDb &&
+      calibration.boostMultiplier === settingsCalibration.boostMultiplier
+    ) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      void updateHearingCalibration(settingsCalibration);
+    }, 180);
+
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, [calibration, settingsCalibration, updateHearingCalibration]);
 
   const inputOptions = useMemo(
     () => [
@@ -438,6 +583,34 @@ function SettingsPage() {
 
       <AnimatedEntrance delay={120}>
         <SurfaceCard style={styles.settingsCard} theme={theme}>
+          <Text style={[styles.settingsTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>Sound tuning</Text>
+          <TuningSlider
+            helper="Raises all outside sound before your hearing-loss shaping. Increase this if your earbuds block too much of the room."
+            label="Base lift"
+            max={18}
+            min={0}
+            onChange={(value) => setSettingsCalibration((current) => ({ ...current, baseGainDb: value }))}
+            step={0.5}
+            theme={theme}
+            value={settingsCalibration.baseGainDb}
+            valueFormatter={(value) => `+${value.toFixed(1)} dB`}
+          />
+          <TuningSlider
+            helper="Scales how strongly your hearing profile boosts each side. Increase this if speech still feels too soft."
+            label="Profile strength"
+            max={2.2}
+            min={0.5}
+            onChange={(value) => setSettingsCalibration((current) => ({ ...current, boostMultiplier: value }))}
+            step={0.05}
+            theme={theme}
+            value={settingsCalibration.boostMultiplier}
+            valueFormatter={(value) => `${value.toFixed(2)}x`}
+          />
+        </SurfaceCard>
+      </AnimatedEntrance>
+
+      <AnimatedEntrance delay={180}>
+        <SurfaceCard style={styles.settingsCard} theme={theme}>
           <Text style={[styles.settingsTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>Audio route</Text>
           <DeviceSelector
             disabled={isHearingSupportBusy}
@@ -471,7 +644,7 @@ function SettingsPage() {
         </SurfaceCard>
       </AnimatedEntrance>
 
-      <AnimatedEntrance delay={180}>
+      <AnimatedEntrance delay={240}>
         <SurfaceCard style={styles.settingsCard} theme={theme}>
           <SettingsRow label="Retake ear test" onPress={retakeEarTest} theme={theme} />
           <SettingsRow danger label="Clear local ear test data" onPress={confirmClearLocalEarTestData} theme={theme} />
@@ -534,7 +707,7 @@ function DeviceSelector({
   label: string;
   onSelect: (deviceId: number | null) => void;
   onToggle: () => void;
-  options: Array<{ id: number | null; label: string; description: string }>;
+  options: { id: number | null; label: string; description: string }[];
   selectedId: number | null;
   selectedLabel: string;
   theme: ReturnType<typeof useAppState>['theme'];
@@ -676,6 +849,41 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 16,
     paddingBottom: 12,
+  },
+  homeToggles: {
+    width: '100%',
+    maxWidth: 360,
+    gap: 10,
+  },
+  homeToggleCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  homeToggleBody: {
+    flex: 1,
+    gap: 4,
+  },
+  homeToggleLabel: {
+    fontSize: 15,
+    lineHeight: 20,
+  },
+  homeToggleTrack: {
+    width: 54,
+    height: 26,
+    borderRadius: 999,
+    borderWidth: 1,
+    padding: 3,
+    justifyContent: 'center',
+  },
+  homeToggleThumb: {
+    width: 18,
+    height: 18,
+    borderRadius: 999,
   },
   warningCard: {
     width: '100%',

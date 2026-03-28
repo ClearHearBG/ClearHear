@@ -14,11 +14,14 @@ export const EAR_TEST_FREQUENCIES = [63, 80, 100, 125, 180, 250, 350, 500, 700, 
 export const MIN_TEST_FREQUENCY = EAR_TEST_FREQUENCIES[0];
 export const MAX_TEST_FREQUENCY = EAR_TEST_FREQUENCIES[EAR_TEST_FREQUENCIES.length - 1];
 export const TEST_EAR_ORDER: EarSide[] = ['left', 'right'];
-export const TEST_THRESHOLD_MIN = 4;
-export const TEST_THRESHOLD_MAX = 64;
+export const TEST_THRESHOLD_MIN = 0;
+export const TEST_THRESHOLD_MAX = 84;
 
 const MAX_HEARD_LOSS_DB = 72;
 const MIN_RANGE_SPAN_HZ = 80;
+const EXTREME_LOW_RANGE_CUTOFF_HZ = 28;
+const EXTREME_HIGH_RANGE_CUTOFF_HZ = 18500;
+const HIGH_SWEEP_PROGRESS_EXPONENT = 1.85;
 
 export const DEFAULT_HEARING_CALIBRATION: HearingCalibration = {
   baseGainDb: 6,
@@ -66,8 +69,16 @@ function createDerivedRange(points: HearingPoint[]): HearingRange {
 function normalizeHearingRange(range?: Partial<HearingRange> | null, fallback?: HearingRange): HearingRange {
   const fallbackMin = toFiniteFrequency(fallback?.minFrequency);
   const fallbackMax = toFiniteFrequency(fallback?.maxFrequency);
-  const nextMin = toFiniteFrequency(range?.minFrequency) ?? fallbackMin;
-  const nextMax = toFiniteFrequency(range?.maxFrequency) ?? fallbackMax;
+  let nextMin = toFiniteFrequency(range?.minFrequency) ?? fallbackMin;
+  let nextMax = toFiniteFrequency(range?.maxFrequency) ?? fallbackMax;
+
+  if (nextMin !== null && nextMin <= EXTREME_LOW_RANGE_CUTOFF_HZ && fallbackMin !== null && fallbackMin > nextMin) {
+    nextMin = fallbackMin;
+  }
+
+  if (nextMax !== null && nextMax >= EXTREME_HIGH_RANGE_CUTOFF_HZ && fallbackMax !== null && fallbackMax < nextMax) {
+    nextMax = fallbackMax;
+  }
 
   if (nextMin === null && nextMax === null) {
     return { minFrequency: null, maxFrequency: null };
@@ -132,37 +143,39 @@ function logInterpolateFrequency(startFrequency: number, endFrequency: number, p
 }
 
 export function getBoundarySweepFrequencyAtProgress(direction: HearingBoundaryDirection, progress: number): number {
+  const adjustedProgress = direction === 'high' ? clamp(progress, 0, 1) ** HIGH_SWEEP_PROGRESS_EXPONENT : clamp(progress, 0, 1);
+
   return direction === 'low'
-    ? logInterpolateFrequency(SOURCE_MIN_FREQUENCY, SOURCE_MAX_FREQUENCY, progress)
-    : logInterpolateFrequency(SOURCE_MAX_FREQUENCY, SOURCE_MIN_FREQUENCY, progress);
+    ? logInterpolateFrequency(SOURCE_MIN_FREQUENCY, SOURCE_MAX_FREQUENCY, adjustedProgress)
+    : logInterpolateFrequency(SOURCE_MAX_FREQUENCY, SOURCE_MIN_FREQUENCY, adjustedProgress);
 }
 
 export function getFrequencyVolumeProfile(frequency: number): FrequencyVolumeProfile {
   if (frequency <= 80) {
-    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: TEST_THRESHOLD_MAX, steps: 4 };
-  }
-
-  if (frequency <= 125) {
     return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: TEST_THRESHOLD_MAX, steps: 5 };
   }
 
+  if (frequency <= 125) {
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 82, steps: 6 };
+  }
+
   if (frequency <= 350) {
-    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: TEST_THRESHOLD_MAX, steps: 6 };
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 76, steps: 8 };
   }
 
   if (frequency <= 1400) {
-    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 56, steps: 8 };
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 64, steps: 10 };
   }
 
   if (frequency <= 4000) {
-    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 48, steps: 10 };
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 56, steps: 11 };
   }
 
   if (frequency <= 8000) {
-    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 44, steps: 11 };
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 50, steps: 12 };
   }
 
-  return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 40, steps: 12 };
+  return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 46, steps: 13 };
 }
 
 function getThresholdSpan(profile: FrequencyVolumeProfile): number {
@@ -172,7 +185,7 @@ function getThresholdSpan(profile: FrequencyVolumeProfile): number {
 function getEasedRampProgress(progress: number): number {
   const safeProgress = clamp(progress, 0, 1);
 
-  return safeProgress ** 1.85;
+  return safeProgress ** 2.8;
 }
 
 function interpolateThreshold(profile: FrequencyVolumeProfile, progress: number): number {

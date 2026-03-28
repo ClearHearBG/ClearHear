@@ -32,6 +32,9 @@ export type NativeHearingSupportConfig = {
   bandCount?: number;
   baseGainDb?: number;
   boostMultiplier?: number;
+  amplificationEnabled?: boolean;
+  frequencyMappingEnabled?: boolean;
+  noiseFilteringEnabled?: boolean;
   preferredInputId?: number | null;
   preferredOutputId?: number | null;
 };

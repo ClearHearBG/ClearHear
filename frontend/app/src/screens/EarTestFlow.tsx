@@ -1,9 +1,10 @@
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Animated, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HearingResultsChart } from '@/src/components/HearingResultsChart';
+import { TuningSlider } from '@/src/components/TuningSlider';
 import { ActionButton, Atmosphere, Pill, SurfaceCard } from '@/src/components/primitives';
 import {
   BOUNDARY_SWEEP_DURATION_MS,
@@ -317,13 +318,6 @@ export function EarTestFlow() {
 
   useEffect(() => {
     if (stage !== 'testing') {
-      activeAttemptKey.current += 1;
-      void stopTonePlayback();
-      stopPulse();
-      attemptProgressRef.current = 0;
-      setAttemptProgressValue(0);
-      playbackProgress.setValue(0);
-      setIsToneActive(false);
       return;
     }
 
@@ -375,13 +369,6 @@ export function EarTestFlow() {
 
   useEffect(() => {
     if (stage !== 'rangeTesting') {
-      activeAttemptKey.current += 1;
-      void stopTonePlayback();
-      stopPulse();
-      attemptProgressRef.current = 0;
-      setAttemptProgressValue(0);
-      playbackProgress.setValue(0);
-      setIsToneActive(false);
       return;
     }
 
@@ -446,7 +433,7 @@ export function EarTestFlow() {
       return;
     }
 
-    finishRangeAttempt(currentRangeFrequency);
+    finishRangeAttempt(getBoundarySweepFrequencyAtProgress(currentRangeDirection, attemptProgressRef.current));
   };
 
   const beginTest = () => {
@@ -512,13 +499,8 @@ export function EarTestFlow() {
           <View style={styles.screen}>
             <Animated.View style={styles.contentWrap}>
               <View style={styles.headerBlock}>
-                <View style={styles.earTabs}>
-                  <EarTab active={currentTestEar === 'left'} label="Left" theme={theme} />
-                  <EarTab active={currentTestEar === 'right'} label="Right" theme={theme} />
-                </View>
-                <Pill accent label={formatFrequency(currentFrequency)} theme={theme} />
-                <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Tap as soon as you hear it.</Text>
-                <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>The tone starts soft and rises while we test each fixed frequency.</Text>
+                <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Tap as soon as you hear a sound.</Text>
+                <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>We use this to build your sound amplification profile.</Text>
               </View>
 
               <View style={styles.middleWrap}>
@@ -559,18 +541,15 @@ export function EarTestFlow() {
                       <Text style={[styles.sideBadgeText, { color: theme.accent, fontFamily: theme.fonts.bodyBold }]}>{currentTestEar === 'left' ? 'L' : 'R'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.hearButtonText, { color: theme.text, fontFamily: theme.fonts.bodyBold }]}>Tap when audible</Text>
                 </Pressable>
               </View>
 
               <View style={[styles.statusCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
                 <View style={styles.rowBetween}>
                   <View style={styles.flex}>
-                    <Text style={[styles.statusLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>
-                      {isToneActive ? 'Volume rising' : 'Preparing next sound'}
-                    </Text>
-                    <Text style={[styles.statusMeta, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>
-                      {formatFrequency(currentFrequency)} - {isToneActive ? `step ${liveVolumeLevel}/${currentVolumeProfile.steps}` : 'starting over'}
+                    <Text style={[styles.statusLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>Tone test</Text>
+                    <Text style={[styles.statusMeta, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}> 
+                      {formatFrequency(currentFrequency)} - step {liveVolumeLevel}/{currentVolumeProfile.steps}
                     </Text>
                   </View>
                   <Text style={[styles.statusStep, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>
@@ -620,17 +599,8 @@ export function EarTestFlow() {
           <View style={styles.screen}>
             <Animated.View style={styles.contentWrap}>
               <View style={styles.headerBlock}>
-                <View style={styles.earTabs}>
-                  <EarTab active={currentRangeEar === 'left'} label="Left" theme={theme} />
-                  <EarTab active={currentRangeEar === 'right'} label="Right" theme={theme} />
-                </View>
                 <Pill accent label={rangeSweepLabel} theme={theme} />
                 <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Tap when the sweep becomes audible.</Text>
-                <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>
-                  {currentRangeDirection === 'low'
-                    ? 'We are rising from 20 Hz upward to find the first low frequency you can hear clearly.'
-                    : 'We are dropping from 20 kHz downward to find the highest frequency you can still catch.'}
-                </Text>
               </View>
 
               <View style={styles.middleWrap}>
@@ -671,18 +641,15 @@ export function EarTestFlow() {
                       <Text style={[styles.sideBadgeText, { color: theme.accent, fontFamily: theme.fonts.bodyBold }]}>{currentRangeEar === 'left' ? 'L' : 'R'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.hearButtonText, { color: theme.text, fontFamily: theme.fonts.bodyBold }]}>Tap when audible</Text>
                 </Pressable>
               </View>
 
               <View style={[styles.statusCard, { backgroundColor: theme.card, borderColor: theme.border }]}> 
                 <View style={styles.rowBetween}>
                   <View style={styles.flex}>
-                    <Text style={[styles.statusLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>
-                      {currentRangeDirection === 'low' ? 'Sweeping upward' : 'Sweeping downward'}
-                    </Text>
+                    <Text style={[styles.statusLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>Range sweep</Text>
                     <Text style={[styles.statusMeta, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}> 
-                      {formatFrequency(currentRangeFrequency)} - {isToneActive ? 'tap at first audibility' : 'preparing next sweep'}
+                      {formatFrequency(currentRangeFrequency)}
                     </Text>
                   </View>
                   <Text style={[styles.statusStep, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}> 
@@ -896,38 +863,6 @@ function EarTestBackdrop({ theme }: { theme: ReturnType<typeof useAppState>['the
   );
 }
 
-function EarTab({
-  active,
-  label,
-  theme,
-}: {
-  active: boolean;
-  label: string;
-  theme: ReturnType<typeof useAppState>['theme'];
-}) {
-  return (
-    <View
-      style={[
-        styles.earTab,
-        {
-          backgroundColor: active ? theme.accentSoft : theme.card,
-          borderColor: active ? 'transparent' : theme.border,
-        },
-      ]}>
-      <Text
-        style={[
-          styles.earTabText,
-          {
-            color: active ? theme.accent : theme.textMuted,
-            fontFamily: active ? theme.fonts.bodyBold : theme.fonts.bodyMedium,
-          },
-        ]}>
-        {label}
-      </Text>
-    </View>
-  );
-}
-
 function Instruction({
   icon,
   text,
@@ -1017,96 +952,6 @@ function CalibrationMetric({
   );
 }
 
-function TuningSlider({
-  helper,
-  label,
-  max,
-  min,
-  onChange,
-  step,
-  theme,
-  value,
-  valueFormatter,
-}: {
-  helper: string;
-  label: string;
-  max: number;
-  min: number;
-  onChange: (value: number) => void;
-  step: number;
-  theme: ReturnType<typeof useAppState>['theme'];
-  value: number;
-  valueFormatter: (value: number) => string;
-}) {
-  const trackWidth = useRef(1);
-
-  const clampValue = useCallback(
-    (nextValue: number) => {
-      const safeValue = Math.max(min, Math.min(max, nextValue));
-      const steppedValue = Math.round((safeValue - min) / step) * step + min;
-      return Number(Math.max(min, Math.min(max, steppedValue)).toFixed(3));
-    },
-    [max, min, step],
-  );
-
-  const updateFromLocation = useCallback(
-    (locationX: number) => {
-      const ratio = Math.max(0, Math.min(1, locationX / Math.max(trackWidth.current, 1)));
-      onChange(clampValue(min + ratio * (max - min)));
-    },
-    [clampValue, max, min, onChange],
-  );
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: (event) => {
-          updateFromLocation(event.nativeEvent.locationX);
-        },
-        onPanResponderMove: (event) => {
-          updateFromLocation(event.nativeEvent.locationX);
-        },
-        onStartShouldSetPanResponder: () => true,
-      }),
-    [updateFromLocation],
-  );
-
-  const fillRatio = Math.max(0, Math.min(1, (value - min) / (max - min)));
-
-  return (
-    <View style={styles.sliderBlock}>
-      <View style={styles.rowBetween}>
-        <Text style={[styles.sliderLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{label}</Text>
-        <Text style={[styles.sliderValue, { color: theme.accent, fontFamily: theme.fonts.bodyBold }]}>{valueFormatter(value)}</Text>
-      </View>
-      <Text style={[styles.sliderHelper, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{helper}</Text>
-      <View
-        onLayout={(event) => {
-          trackWidth.current = event.nativeEvent.layout.width;
-        }}
-        style={[styles.sliderTrack, { backgroundColor: theme.progressTrack, borderColor: theme.border }]}
-        {...panResponder.panHandlers}>
-        <View style={[styles.sliderFill, { width: `${fillRatio * 100}%`, backgroundColor: theme.accent }]} />
-        <View
-          style={[
-            styles.sliderThumb,
-            {
-              backgroundColor: theme.card,
-              borderColor: theme.accent,
-              left: `${fillRatio * 100}%`,
-            },
-          ]}
-        />
-      </View>
-      <View style={styles.sliderRangeRow}>
-        <Text style={[styles.sliderRangeLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>{valueFormatter(min)}</Text>
-        <Text style={[styles.sliderRangeLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>{valueFormatter(max)}</Text>
-      </View>
-    </View>
-  );
-}
-
 function CircleBackButton({
   onPress,
   theme,
@@ -1171,23 +1016,6 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     textAlign: 'center',
   },
-  earTabs: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  earTab: {
-    minWidth: 82,
-    minHeight: 38,
-    borderRadius: 999,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
-  earTabText: {
-    fontSize: 13,
-    lineHeight: 16,
-  },
   middleWrap: {
     flex: 1,
     alignItems: 'center',
@@ -1206,14 +1034,22 @@ const styles = StyleSheet.create({
   },
   pulseHalo: {
     position: 'absolute',
+    left: '50%',
+    top: '50%',
     width: 220,
     height: 220,
+    marginLeft: -110,
+    marginTop: -110,
     borderRadius: 999,
   },
   volumeRing: {
     position: 'absolute',
+    left: '50%',
+    top: '50%',
     width: 238,
     height: 238,
+    marginLeft: -119,
+    marginTop: -119,
     borderRadius: 999,
     borderWidth: 3,
   },
@@ -1238,11 +1074,6 @@ const styles = StyleSheet.create({
   sideBadgeText: {
     fontSize: 13,
     lineHeight: 16,
-  },
-  hearButtonText: {
-    fontSize: 22,
-    lineHeight: 28,
-    textAlign: 'center',
   },
   statusCard: {
     borderRadius: 22,
@@ -1442,49 +1273,6 @@ const styles = StyleSheet.create({
   calibrationSummaryText: {
     fontSize: 13,
     lineHeight: 20,
-  },
-  sliderBlock: {
-    gap: 10,
-  },
-  sliderLabel: {
-    fontSize: 16,
-    lineHeight: 20,
-  },
-  sliderValue: {
-    fontSize: 15,
-    lineHeight: 20,
-  },
-  sliderHelper: {
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  sliderTrack: {
-    height: 18,
-    borderRadius: 999,
-    borderWidth: 1,
-    justifyContent: 'center',
-  },
-  sliderFill: {
-    height: '100%',
-    borderRadius: 999,
-  },
-  sliderThumb: {
-    position: 'absolute',
-    top: -4,
-    width: 26,
-    height: 26,
-    marginLeft: -13,
-    borderRadius: 999,
-    borderWidth: 3,
-  },
-  sliderRangeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  sliderRangeLabel: {
-    fontSize: 12,
-    lineHeight: 16,
   },
   reviewCard: {
     gap: 12,
