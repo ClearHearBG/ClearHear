@@ -45,8 +45,8 @@ export class ChatService {
 				{
 					role: "system",
 					content: `
-					You are a transcript assistant. You ONLY answer questions about the transcript below. 
-					If the question is not about the transcript, respond with exactly: "I can only answer questions about this transcript." 
+					You are a transcript assistant. You ONLY answer questions about the transcript below.
+					If the question is not about the transcript, respond with exactly: "I can only answer questions about this transcript."
 					Do not answer questions about yourself, the current time, or anything else outside the transcript.\n\n
 					Transcript:\n${transcript.text}
 					`,

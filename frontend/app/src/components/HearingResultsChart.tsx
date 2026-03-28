@@ -80,7 +80,7 @@ export function HearingResultsChart({ points, theme }: { points: HearingPoint[];
           onLayout={(event) => {
             setChartWidth(event.nativeEvent.layout.width);
           }}
-          style={[styles.graphFrame, { backgroundColor: theme.elevated, borderColor: theme.border }]}> 
+          style={[styles.graphFrame, { backgroundColor: theme.elevated, borderColor: theme.border }]}>
           {Y_TICKS.map((tick) => {
             const top = yPosition(tick, innerHeight);
 
