@@ -1,28 +1,69 @@
-import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+import {
+  Audio,
+  InterruptionModeAndroid,
+  InterruptionModeIOS,
+  type AVPlaybackStatus,
+} from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Buffer } from 'buffer';
 import { Platform } from 'react-native';
 
 import type { EarSide } from '@/src/types/app';
-import { getThresholdAtProgress } from '@/src/utils/hearing';
+import {
+  getBoundarySweepFrequencyAtProgress,
+  getThresholdAtProgress,
+  type HearingBoundaryDirection,
+} from '@/src/utils/hearing';
 
 const SAMPLE_RATE = 44100;
-export const RAMPED_TONE_DURATION_MS = 4600;
+export const RAMPED_TONE_DURATION_MS = 7600;
+export const BOUNDARY_SWEEP_DURATION_MS = 15000;
 
 const TONE_DURATION_SECONDS = RAMPED_TONE_DURATION_MS / 1000;
+const BOUNDARY_SWEEP_DURATION_SECONDS = BOUNDARY_SWEEP_DURATION_MS / 1000;
 const FADE_OUT_SECONDS = 0.06;
+const BOUNDARY_SWEEP_FADE_SECONDS = 0.08;
+const BOUNDARY_SWEEP_AMPLITUDE = 0.22;
+const BASE_MAX_TEST_AMPLITUDE = 0.48;
+const MAX_TEST_AMPLITUDE = 0.88;
+const MAX_THRESHOLD_REFERENCE = 84;
 
 const toneCache = new Map<string, string>();
 
 let audioPrepared = false;
-let activePlayer: ReturnType<typeof createAudioPlayer> | null = null;
-let activePlayerSubscription: { remove: () => void } | null = null;
+let activePlayer: Audio.Sound | null = null;
 let activePlaybackResolve: (() => void) | null = null;
 let activePlaybackTimeout: ReturnType<typeof setTimeout> | null = null;
 let playbackSessionId = 0;
 
-function thresholdToAmplitude(threshold: number): number {
-  return Math.max(0.015, Math.min(0.42, threshold / 100));
+function frequencyCompensation(frequency: number): number {
+  if (frequency <= 80) {
+    return 1.7;
+  }
+
+  if (frequency <= 125) {
+    return 1.55;
+  }
+
+  if (frequency <= 250) {
+    return 1.38;
+  }
+
+  if (frequency <= 500) {
+    return 1.22;
+  }
+
+  if (frequency <= 1000) {
+    return 1.1;
+  }
+
+  return 1;
+}
+
+function thresholdToAmplitude(threshold: number, frequency: number): number {
+  const normalizedThreshold = Math.max(0, Math.min(1, threshold / MAX_THRESHOLD_REFERENCE));
+  const compensatedAmplitude = normalizedThreshold ** 2.35 * BASE_MAX_TEST_AMPLITUDE * frequencyCompensation(frequency);
+  return Math.min(MAX_TEST_AMPLITUDE, compensatedAmplitude);
 }
 
 function writeWavHeader(view: DataView, byteLength: number, sampleRate: number) {
@@ -64,7 +105,39 @@ function buildRampedToneWave(frequency: number, ear: EarSide): Uint8Array {
     const currentThreshold = getThresholdAtProgress(frequency, rampProgress);
     const fadeOut = index > frameCount - fadeOutFrames ? (frameCount - index) / fadeOutFrames : 1;
     const envelope = Math.max(0, Math.min(1, fadeOut));
-    const sampleValue = Math.sin(2 * Math.PI * frequency * time) * thresholdToAmplitude(currentThreshold) * envelope;
+    const sampleValue = Math.sin(2 * Math.PI * frequency * time) * thresholdToAmplitude(currentThreshold, frequency) * envelope;
+    const pcm = Math.max(-1, Math.min(1, sampleValue)) * 32767;
+
+    view.setInt16(offset, ear === 'left' ? pcm : 0, true);
+    view.setInt16(offset + 2, ear === 'right' ? pcm : 0, true);
+    offset += 4;
+  }
+
+  return bytes;
+}
+
+function buildBoundarySweepWave(direction: HearingBoundaryDirection, ear: EarSide): Uint8Array {
+  const frameCount = Math.floor(SAMPLE_RATE * BOUNDARY_SWEEP_DURATION_SECONDS);
+  const dataLength = frameCount * 4;
+  const bytes = new Uint8Array(44 + dataLength);
+  const view = new DataView(bytes.buffer);
+
+  writeWavHeader(view, dataLength, SAMPLE_RATE);
+
+  const fadeFrames = Math.floor(SAMPLE_RATE * BOUNDARY_SWEEP_FADE_SECONDS);
+  let offset = 44;
+  let phase = 0;
+
+  for (let index = 0; index < frameCount; index += 1) {
+    const progress = index / Math.max(1, frameCount - 1);
+    const frequency = getBoundarySweepFrequencyAtProgress(direction, progress);
+    const fadeIn = index < fadeFrames ? index / Math.max(1, fadeFrames) : 1;
+    const fadeOut = index > frameCount - fadeFrames ? (frameCount - index) / Math.max(1, fadeFrames) : 1;
+    const envelope = Math.max(0, Math.min(1, Math.min(fadeIn, fadeOut)));
+
+    phase += (2 * Math.PI * frequency) / SAMPLE_RATE;
+
+    const sampleValue = Math.sin(phase) * BOUNDARY_SWEEP_AMPLITUDE * envelope;
     const pcm = Math.max(-1, Math.min(1, sampleValue)) * 32767;
 
     view.setInt16(offset, ear === 'left' ? pcm : 0, true);
@@ -105,24 +178,51 @@ async function getToneUri(frequency: number, ear: EarSide): Promise<string> {
   return uri;
 }
 
-function disposePlayer(player: ReturnType<typeof createAudioPlayer>) {
+async function getBoundarySweepUri(direction: HearingBoundaryDirection, ear: EarSide): Promise<string> {
+  const cacheKey = `${ear}-${direction}-boundary-sweep-v1`;
+  const cachedUri = toneCache.get(cacheKey);
+
+  if (cachedUri) {
+    return cachedUri;
+  }
+
+  const bytes = buildBoundarySweepWave(direction, ear);
+  const base64 = Buffer.from(bytes).toString('base64');
+
+  if (Platform.OS === 'web') {
+    const dataUri = `data:audio/wav;base64,${base64}`;
+    toneCache.set(cacheKey, dataUri);
+    return dataUri;
+  }
+
+  if (!FileSystem.cacheDirectory) {
+    throw new Error('Missing cache directory for tone playback');
+  }
+
+  const uri = `${FileSystem.cacheDirectory}clearhear-tone-${cacheKey}.wav`;
+  await FileSystem.writeAsStringAsync(uri, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  toneCache.set(cacheKey, uri);
+
+  return uri;
+}
+
+async function disposePlayer(player: Audio.Sound) {
   try {
-    player.pause();
+    await player.stopAsync();
   } catch {
     // ignore pause failures
   }
 
   try {
-    player.remove();
+    await player.unloadAsync();
   } catch {
     // ignore remove failures
   }
 }
 
 async function unloadActiveSound() {
-  activePlayerSubscription?.remove();
-  activePlayerSubscription = null;
-
   if (activePlaybackTimeout) {
     clearTimeout(activePlaybackTimeout);
     activePlaybackTimeout = null;
@@ -134,7 +234,7 @@ async function unloadActiveSound() {
   if (activePlayer) {
     const player = activePlayer;
     activePlayer = null;
-    disposePlayer(player);
+    await disposePlayer(player);
   }
 
   resolvePlayback?.();
@@ -145,14 +245,92 @@ export async function prepareTonePlayer() {
     return;
   }
 
-  await setAudioModeAsync({
-    interruptionMode: 'doNotMix',
-    playsInSilentMode: true,
-    shouldPlayInBackground: false,
-    shouldRouteThroughEarpiece: false,
+  await Audio.setAudioModeAsync({
+    allowsRecordingIOS: false,
+    interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+    interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+    playThroughEarpieceAndroid: false,
+    playsInSilentModeIOS: true,
+    shouldDuckAndroid: false,
+    staysActiveInBackground: false,
   });
 
   audioPrepared = true;
+}
+
+async function createAndPlaySound(uri: string, durationMs: number, sessionId: number): Promise<void> {
+  const sound = new Audio.Sound();
+
+  await sound.loadAsync(
+    { uri },
+    {
+      isLooping: false,
+      progressUpdateIntervalMillis: 80,
+      shouldPlay: false,
+      volume: 1,
+    },
+    false,
+  );
+
+  if (sessionId !== playbackSessionId) {
+    await disposePlayer(sound);
+    return;
+  }
+
+  activePlayer = sound;
+
+  await new Promise<void>((resolve) => {
+    let resolved = false;
+
+    const finishPlayback = () => {
+      if (resolved) {
+        return;
+      }
+
+      resolved = true;
+
+      if (activePlaybackResolve === finishPlayback) {
+        activePlaybackResolve = null;
+      }
+      if (activePlaybackTimeout) {
+        clearTimeout(activePlaybackTimeout);
+        activePlaybackTimeout = null;
+      }
+
+      sound.setOnPlaybackStatusUpdate(null);
+
+      const finalize = async () => {
+        if (activePlayer === sound) {
+          activePlayer = null;
+        }
+
+        await disposePlayer(sound);
+        resolve();
+      };
+
+      void finalize();
+    };
+
+    const handleStatusUpdate = (status: AVPlaybackStatus) => {
+      if (!status.isLoaded) {
+        if (status.error) {
+          finishPlayback();
+        }
+        return;
+      }
+
+      if (sessionId !== playbackSessionId || status.didJustFinish) {
+        finishPlayback();
+      }
+    };
+
+    activePlaybackResolve = finishPlayback;
+    activePlaybackTimeout = setTimeout(finishPlayback, durationMs + 400);
+    sound.setOnPlaybackStatusUpdate(handleStatusUpdate);
+    void sound.playAsync().catch(() => {
+      finishPlayback();
+    });
+  });
 }
 
 export async function playRampedTone({
@@ -174,66 +352,29 @@ export async function playRampedTone({
     return;
   }
 
-  const player = createAudioPlayer(uri, {
-    updateInterval: 80,
-  });
+  await createAndPlaySound(uri, RAMPED_TONE_DURATION_MS, sessionId);
+}
+
+export async function playBoundarySweep({
+  direction,
+  ear,
+}: {
+  direction: HearingBoundaryDirection;
+  ear: EarSide;
+}) {
+  const sessionId = playbackSessionId + 1;
+  playbackSessionId = sessionId;
+
+  await prepareTonePlayer();
+  await unloadActiveSound();
+
+  const uri = await getBoundarySweepUri(direction, ear);
 
   if (sessionId !== playbackSessionId) {
-    disposePlayer(player);
-
     return;
   }
 
-  player.volume = 1;
-  activePlayer = player;
-
-  await new Promise<void>((resolve) => {
-    let resolved = false;
-    let subscription: { remove: () => void } | null = null;
-
-    const finishPlayback = () => {
-      if (resolved) {
-        return;
-      }
-
-      resolved = true;
-
-      subscription?.remove();
-      if (activePlayerSubscription === subscription) {
-        activePlayerSubscription = null;
-      }
-      if (activePlaybackResolve === finishPlayback) {
-        activePlaybackResolve = null;
-      }
-      if (activePlaybackTimeout) {
-        clearTimeout(activePlaybackTimeout);
-        activePlaybackTimeout = null;
-      }
-
-      if (activePlayer === player) {
-        activePlayer = null;
-      }
-
-      disposePlayer(player);
-      resolve();
-    };
-
-    activePlaybackResolve = finishPlayback;
-    activePlaybackTimeout = setTimeout(finishPlayback, RAMPED_TONE_DURATION_MS + 200);
-    subscription = player.addListener('playbackStatusUpdate', (status) => {
-      if (sessionId !== playbackSessionId || status.didJustFinish) {
-        finishPlayback();
-      }
-    });
-    activePlayerSubscription = subscription;
-
-    if (sessionId !== playbackSessionId) {
-      finishPlayback();
-      return;
-    }
-
-    player.play();
-  });
+  await createAndPlaySound(uri, BOUNDARY_SWEEP_DURATION_MS, sessionId);
 }
 
 export async function stopTonePlayback() {

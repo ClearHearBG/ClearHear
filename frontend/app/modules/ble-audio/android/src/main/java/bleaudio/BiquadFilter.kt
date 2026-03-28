@@ -33,6 +33,27 @@ internal data class BiquadCoefficients(
         a2 = rawA2 / rawA0,
       )
     }
+
+    fun highPass(sampleRate: Double, cutoffFrequencyHz: Double, q: Double): BiquadCoefficients {
+      val omega = (2.0 * PI * cutoffFrequencyHz) / sampleRate
+      val alpha = sin(omega) / (2.0 * q)
+      val cosine = cos(omega)
+
+      val rawB0 = (1.0 + cosine) / 2.0
+      val rawB1 = -(1.0 + cosine)
+      val rawB2 = (1.0 + cosine) / 2.0
+      val rawA0 = 1.0 + alpha
+      val rawA1 = -2.0 * cosine
+      val rawA2 = 1.0 - alpha
+
+      return BiquadCoefficients(
+        b0 = rawB0 / rawA0,
+        b1 = rawB1 / rawA0,
+        b2 = rawB2 / rawA0,
+        a1 = rawA1 / rawA0,
+        a2 = rawA2 / rawA0,
+      )
+    }
   }
 }
 

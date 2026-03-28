@@ -14,6 +14,9 @@ export interface UserSession {
 export interface AppPreferences {
   themeMode: ThemeMode;
   isDeviceEnabled: boolean;
+  isAmplificationEnabled: boolean;
+  isFrequencyMappingEnabled: boolean;
+  isNoiseFilteringEnabled: boolean;
   autoTranscribe: boolean;
   preferredInputId: number | null;
   preferredOutputId: number | null;
@@ -67,11 +70,19 @@ export interface HearingCalibration {
   boostMultiplier: number;
 }
 
+export interface HearingRange {
+  minFrequency: number | null;
+  maxFrequency: number | null;
+}
+
+export type HearingRangeByEar = Record<EarSide, HearingRange>;
+
 export interface HearingProfile {
   id: string;
   testedAt: string;
   points: HearingPoint[];
   calibration: HearingCalibration;
+  hearingRange: HearingRangeByEar;
   leftSummary: HearingSummary;
   rightSummary: HearingSummary;
   overallScore: number;

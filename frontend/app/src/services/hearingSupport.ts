@@ -5,7 +5,7 @@ import ClearHearAudio, {
   type HearingSupportStatus,
   type NativeHearingSupportConfig,
 } from '@/modules/ble-audio';
-import type { HearingProfile } from '@/src/types/app';
+import type { AppPreferences, HearingProfile } from '@/src/types/app';
 
 const DEFAULT_MAX_GAIN_DB = 18;
 const DEFAULT_BAND_COUNT = 24;
@@ -40,18 +40,33 @@ function isAndroid(): boolean {
 
 function toNativeConfig(
   profile: HearingProfile,
-  routePreferences?: {
-    preferredInputId?: number | null;
-    preferredOutputId?: number | null;
-  },
+  preferences?: Pick<
+    AppPreferences,
+    'isAmplificationEnabled' | 'isFrequencyMappingEnabled' | 'isNoiseFilteringEnabled' | 'preferredInputId' | 'preferredOutputId'
+  >,
 ): NativeHearingSupportConfig {
   return {
+    amplificationEnabled: preferences?.isAmplificationEnabled ?? true,
     bandCount: DEFAULT_BAND_COUNT,
     baseGainDb: profile.calibration.baseGainDb,
     boostMultiplier: profile.calibration.boostMultiplier,
+    frequencyMappingEnabled: preferences?.isFrequencyMappingEnabled ?? true,
+    noiseFilteringEnabled: preferences?.isNoiseFilteringEnabled ?? false,
+    hearingRange: [
+      {
+        ear: 'left',
+        minFrequency: profile.hearingRange.left.minFrequency,
+        maxFrequency: profile.hearingRange.left.maxFrequency,
+      },
+      {
+        ear: 'right',
+        minFrequency: profile.hearingRange.right.minFrequency,
+        maxFrequency: profile.hearingRange.right.maxFrequency,
+      },
+    ],
     maxGainDb: DEFAULT_MAX_GAIN_DB,
-    preferredInputId: routePreferences?.preferredInputId ?? null,
-    preferredOutputId: routePreferences?.preferredOutputId ?? null,
+    preferredInputId: preferences?.preferredInputId ?? null,
+    preferredOutputId: preferences?.preferredOutputId ?? null,
     points: profile.points
       .map((point) => ({
         ear: point.ear,
@@ -87,7 +102,7 @@ export async function requestHearingSupportPermissionAsync(): Promise<boolean> {
 
 export async function getHearingSupportStatusAsync(): Promise<HearingSupportStatus> {
   if (!isAndroid()) {
-    return createBaseStatus('Live hearing support is only available on Android.');
+    return createBaseStatus('Live audio processing is only available on Android.');
   }
 
   return ClearHearAudio.getStatusAsync();
@@ -103,30 +118,30 @@ export async function getHearingSupportInputDevicesAsync(): Promise<AudioDeviceS
 
 export async function startHearingSupportAsync(
   profile: HearingProfile,
-  routePreferences?: {
-    preferredInputId?: number | null;
-    preferredOutputId?: number | null;
-  },
+  preferences?: Pick<
+    AppPreferences,
+    'isAmplificationEnabled' | 'isFrequencyMappingEnabled' | 'isNoiseFilteringEnabled' | 'preferredInputId' | 'preferredOutputId'
+  >,
 ): Promise<HearingSupportStatus> {
   if (!isAndroid()) {
-    return createBaseStatus('Live hearing support is only available on Android.');
+    return createBaseStatus('Live audio processing is only available on Android.');
   }
 
-  return ClearHearAudio.startAsync(JSON.stringify(toNativeConfig(profile, routePreferences)));
+  return ClearHearAudio.startAsync(JSON.stringify(toNativeConfig(profile, preferences)));
 }
 
 export async function updateHearingSupportProfileAsync(
   profile: HearingProfile,
-  routePreferences?: {
-    preferredInputId?: number | null;
-    preferredOutputId?: number | null;
-  },
+  preferences?: Pick<
+    AppPreferences,
+    'isAmplificationEnabled' | 'isFrequencyMappingEnabled' | 'isNoiseFilteringEnabled' | 'preferredInputId' | 'preferredOutputId'
+  >,
 ): Promise<HearingSupportStatus> {
   if (!isAndroid()) {
-    return createBaseStatus('Live hearing support is only available on Android.');
+    return createBaseStatus('Live audio processing is only available on Android.');
   }
 
-  return ClearHearAudio.updateProfileAsync(JSON.stringify(toNativeConfig(profile, routePreferences)));
+  return ClearHearAudio.updateProfileAsync(JSON.stringify(toNativeConfig(profile, preferences)));
 }
 
 export async function stopHearingSupportAsync(): Promise<HearingSupportStatus> {

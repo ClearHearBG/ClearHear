@@ -18,6 +18,7 @@ import {
   requestHearingSupportPermissionAsync,
   startHearingSupportAsync,
   stopHearingSupportAsync,
+  updateHearingSupportProfileAsync,
 } from '@/src/services/hearingSupport';
 import { mockApi } from '@/src/services/mockApi';
 import { loadPersistedState, savePersistedState } from '@/src/services/storage';
@@ -28,10 +29,11 @@ import {
   fetchTranscriptions,
 } from '@/src/services/transcriptions';
 import { createNavigationTheme, themes } from '@/src/theme/theme';
-import { normalizeHearingProfile } from '@/src/utils/hearing';
+import { normalizeHearingCalibration, normalizeHearingProfile } from '@/src/utils/hearing';
 import type {
   AppPreferences,
   AssistantMessage,
+  HearingCalibration,
   HearingProfile,
   ThemeMode,
   TranscriptRecord,
@@ -43,13 +45,16 @@ import type { AudioBufferStatus } from '@/src/types/app';
 const defaultPreferences: AppPreferences = {
   themeMode: 'light',
   isDeviceEnabled: true,
+  isAmplificationEnabled: true,
+  isFrequencyMappingEnabled: true,
+  isNoiseFilteringEnabled: false,
   autoTranscribe: false,
   preferredInputId: null,
   preferredOutputId: null,
 };
 
 const TRANSCRIPT_SYNC_RETRY_DELAYS_MS = [0, 1500, 4000];
-const HEARING_SUPPORT_PERMISSION_ERROR = 'Microphone permission is required to run live hearing support.';
+const HEARING_SUPPORT_PERMISSION_ERROR = 'Microphone permission is required to run live audio processing.';
 
 type EarTestBackupState = {
   profile: HearingProfile;
@@ -100,7 +105,7 @@ function normalizeProfileMap(
 }
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Live hearing support could not start.';
+  return error instanceof Error ? error.message : 'Live audio processing could not start.';
 }
 
 interface AppContextValue {
@@ -123,6 +128,10 @@ interface AppContextValue {
   isSavingProfile: boolean;
   logout: () => Promise<void>;
   toggleDeviceEnabled: () => Promise<void>;
+  setAmplificationEnabled: (value: boolean) => Promise<void>;
+  setFrequencyMappingEnabled: (value: boolean) => Promise<void>;
+  setNoiseFilteringEnabled: (value: boolean) => Promise<void>;
+  updateHearingCalibration: (calibration: Partial<HearingCalibration>) => Promise<void>;
   setThemeMode: (mode: ThemeMode) => Promise<void>;
   setAutoTranscribe: (value: boolean) => Promise<void>;
   setPreferredInputDevice: (deviceId: number | null) => Promise<void>;
@@ -423,12 +432,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       enabled,
       profile,
       promptForPermission = false,
-      routePreferences,
+      processingPreferences,
     }: {
       enabled: boolean;
       profile: HearingProfile | null;
       promptForPermission?: boolean;
-      routePreferences?: Pick<AppPreferences, 'preferredInputId' | 'preferredOutputId'>;
+      processingPreferences?: Pick<
+        AppPreferences,
+        'isAmplificationEnabled' | 'isFrequencyMappingEnabled' | 'isNoiseFilteringEnabled' | 'preferredInputId' | 'preferredOutputId'
+      >;
     }) => {
       if (!session || !enabled || !profile) {
         const nextStatus = await stopHearingSupportAsync();
@@ -453,8 +465,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       try {
         const nextStatus = await startHearingSupportAsync(profile, {
-          preferredInputId: routePreferences?.preferredInputId ?? preferencesRef.current.preferredInputId,
-          preferredOutputId: routePreferences?.preferredOutputId ?? preferencesRef.current.preferredOutputId,
+          isAmplificationEnabled:
+            processingPreferences?.isAmplificationEnabled ?? preferencesRef.current.isAmplificationEnabled,
+          isFrequencyMappingEnabled:
+            processingPreferences?.isFrequencyMappingEnabled ?? preferencesRef.current.isFrequencyMappingEnabled,
+          isNoiseFilteringEnabled:
+            processingPreferences?.isNoiseFilteringEnabled ?? preferencesRef.current.isNoiseFilteringEnabled,
+          preferredInputId: processingPreferences?.preferredInputId ?? preferencesRef.current.preferredInputId,
+          preferredOutputId: processingPreferences?.preferredOutputId ?? preferencesRef.current.preferredOutputId,
         });
         setHearingSupportStatus(nextStatus);
         return nextStatus;
@@ -470,6 +488,68 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [ensureHearingSupportPermission, getPermissionErrorStatus, session],
+  );
+
+  const applyProfileUpdateToRunningSupport = useCallback(
+    async ({
+      profile,
+      promptForPermission = false,
+    }: {
+      profile: HearingProfile;
+      promptForPermission?: boolean;
+    }) => {
+      if (!session) {
+        return null;
+      }
+
+      const hasPermission = await ensureHearingSupportPermission(promptForPermission);
+
+      if (!hasPermission) {
+        const nextStatus = await getPermissionErrorStatus();
+        setHearingSupportStatus(nextStatus);
+        return nextStatus;
+      }
+
+      const currentStatus = hearingSupportStatusRef.current;
+      const isActive = currentStatus.stage === 'running' || currentStatus.stage === 'starting';
+
+      if (!isActive) {
+        return syncHearingSupport({
+          enabled: true,
+          profile,
+          processingPreferences: {
+            isAmplificationEnabled: preferencesRef.current.isAmplificationEnabled,
+            isFrequencyMappingEnabled: preferencesRef.current.isFrequencyMappingEnabled,
+            isNoiseFilteringEnabled: preferencesRef.current.isNoiseFilteringEnabled,
+            preferredInputId: preferencesRef.current.preferredInputId,
+            preferredOutputId: preferencesRef.current.preferredOutputId,
+          },
+          promptForPermission,
+        });
+      }
+
+      try {
+        const nextStatus = await updateHearingSupportProfileAsync(profile, {
+          isAmplificationEnabled: preferencesRef.current.isAmplificationEnabled,
+          isFrequencyMappingEnabled: preferencesRef.current.isFrequencyMappingEnabled,
+          isNoiseFilteringEnabled: preferencesRef.current.isNoiseFilteringEnabled,
+          preferredInputId: preferencesRef.current.preferredInputId,
+          preferredOutputId: preferencesRef.current.preferredOutputId,
+        });
+        setHearingSupportStatus(nextStatus);
+        return nextStatus;
+      } catch (error) {
+        const nextStatus = {
+          ...(await getHearingSupportStatusAsync()),
+          lastError: getErrorMessage(error),
+          running: false,
+          stage: 'error' as const,
+        };
+        setHearingSupportStatus(nextStatus);
+        return nextStatus;
+      }
+    },
+    [ensureHearingSupportPermission, getPermissionErrorStatus, session, syncHearingSupport],
   );
 
   useEffect(() => {
@@ -561,7 +641,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await syncHearingSupport({
         enabled: true,
         profile: hearingProfile,
-        routePreferences: {
+        processingPreferences: {
+          isAmplificationEnabled: nextPreferences.isAmplificationEnabled,
+          isFrequencyMappingEnabled: nextPreferences.isFrequencyMappingEnabled,
+          isNoiseFilteringEnabled: nextPreferences.isNoiseFilteringEnabled,
           preferredInputId: nextPreferences.preferredInputId,
           preferredOutputId: nextPreferences.preferredOutputId,
         },
@@ -579,7 +662,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await updatePreferences((current) => ({ ...current, autoTranscribe: value }));
   };
 
-  const updateRoutePreference = async (
+  const updateProcessingPreference = async (
     updater: (current: AppPreferences) => AppPreferences,
   ) => {
     if (isHearingSupportBusy) {
@@ -598,7 +681,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await syncHearingSupport({
         enabled: true,
         profile: hearingProfile,
-        routePreferences: {
+        processingPreferences: {
+          isAmplificationEnabled: nextPreferences.isAmplificationEnabled,
+          isFrequencyMappingEnabled: nextPreferences.isFrequencyMappingEnabled,
+          isNoiseFilteringEnabled: nextPreferences.isNoiseFilteringEnabled,
           preferredInputId: nextPreferences.preferredInputId,
           preferredOutputId: nextPreferences.preferredOutputId,
         },
@@ -609,18 +695,74 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const setPreferredInputDevice = async (deviceId: number | null) => {
-    await updateRoutePreference((current) => ({
+    await updateProcessingPreference((current) => ({
       ...current,
       preferredInputId: normalizeDeviceId(deviceId),
     }));
   };
 
   const setPreferredOutputDevice = async (deviceId: number | null) => {
-    await updateRoutePreference((current) => ({
+    await updateProcessingPreference((current) => ({
       ...current,
       preferredOutputId: normalizeDeviceId(deviceId),
     }));
   };
+
+  const setAmplificationEnabled = async (value: boolean) => {
+    await updateProcessingPreference((current) => ({
+      ...current,
+      isAmplificationEnabled: value,
+    }));
+  };
+
+  const setFrequencyMappingEnabled = async (value: boolean) => {
+    await updateProcessingPreference((current) => ({
+      ...current,
+      isFrequencyMappingEnabled: value,
+    }));
+  };
+
+  const setNoiseFilteringEnabled = async (value: boolean) => {
+    await updateProcessingPreference((current) => ({
+      ...current,
+      isNoiseFilteringEnabled: value,
+    }));
+  };
+
+  const updateHearingCalibration = useCallback(
+    async (calibration: Partial<HearingCalibration>) => {
+      if (!session || !hearingProfile) {
+        return;
+      }
+
+      const nextProfile = normalizeHearingProfile({
+        ...hearingProfile,
+        calibration: normalizeHearingCalibration({
+          ...hearingProfile.calibration,
+          ...calibration,
+        }),
+      });
+
+      if (!nextProfile) {
+        return;
+      }
+
+      setHearingProfile(nextProfile);
+      setEarTestProfilesByUser((current) => ({
+        ...current,
+        [session.id]: nextProfile,
+      }));
+
+      if (!preferencesRef.current.isDeviceEnabled) {
+        return;
+      }
+
+      await applyProfileUpdateToRunningSupport({
+        profile: nextProfile,
+      });
+    },
+    [applyProfileUpdateToRunningSupport, hearingProfile, session],
+  );
 
   const previewHearingSupport = useCallback(
     async (profile: HearingProfile) => {
@@ -634,23 +776,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      setIsHearingSupportBusy(true);
-
-      try {
-        await syncHearingSupport({
-          enabled: true,
-          profile: normalizedProfile,
-          promptForPermission: true,
-          routePreferences: {
-            preferredInputId: preferencesRef.current.preferredInputId,
-            preferredOutputId: preferencesRef.current.preferredOutputId,
-          },
-        });
-      } finally {
-        setIsHearingSupportBusy(false);
-      }
+      await applyProfileUpdateToRunningSupport({
+        profile: normalizedProfile,
+        promptForPermission: true,
+      });
     },
-    [session, syncHearingSupport],
+    [applyProfileUpdateToRunningSupport, session],
   );
 
   const stopPreviewHearingSupport = useCallback(async () => {
@@ -784,7 +915,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await syncHearingSupport({
         enabled: true,
         profile: savedProfile,
-        routePreferences: {
+        processingPreferences: {
+          isAmplificationEnabled: nextPreferences.isAmplificationEnabled,
+          isFrequencyMappingEnabled: nextPreferences.isFrequencyMappingEnabled,
+          isNoiseFilteringEnabled: nextPreferences.isNoiseFilteringEnabled,
           preferredInputId: nextPreferences.preferredInputId,
           preferredOutputId: nextPreferences.preferredOutputId,
         },
@@ -874,6 +1008,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     isSavingProfile,
     logout,
     toggleDeviceEnabled,
+    setAmplificationEnabled,
+    setFrequencyMappingEnabled,
+    setNoiseFilteringEnabled,
+    updateHearingCalibration,
     setThemeMode,
     setAutoTranscribe,
     setPreferredInputDevice,
