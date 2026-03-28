@@ -1,5 +1,5 @@
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BottomBar } from '@/src/components/BottomBar';
 import { ActionButton, AnimatedEntrance, Atmosphere, Pill, SurfaceCard } from '@/src/components/primitives';
+import type { AudioDeviceSummary } from '@/modules/ble-audio';
 import { useAppState } from '@/src/state/AppProvider';
 import { formatRelative, formatTime } from '@/src/utils/format';
 
@@ -77,13 +78,30 @@ export function MainPager() {
 }
 
 function HomePage() {
-  const { audioBufferStatus, preferences, theme, toggleDeviceEnabled } = useAppState();
-  const isOn = preferences.isDeviceEnabled;
+  const { audioBufferStatus, hearingSupportStatus, isHearingSupportBusy, preferences, theme, toggleDeviceEnabled } = useAppState();
+  const isRequested = preferences.isDeviceEnabled;
+  const isRunning = hearingSupportStatus.stage === 'running';
+  const isStarting = hearingSupportStatus.stage === 'starting';
+  const isStopping = isHearingSupportBusy && !isRequested && !isRunning && !isStarting;
+  const canRetry = isRequested && !isRunning && !isStarting && !isHearingSupportBusy;
+  const statusTitle = isRunning ? 'On' : isStarting ? 'Starting' : isStopping ? 'Stopping' : canRetry ? 'Retry' : 'Off';
+  const directionalityWarning = getDirectionalityWarning(hearingSupportStatus);
+  const statusDescription = isRunning
+    ? `Live amplification is running through ${hearingSupportStatus.selectedOutput?.name ?? 'your headphones'}.`
+    : isStarting
+      ? 'Opening the live audio route.'
+      : isStopping
+        ? 'Turning live amplification off.'
+        : canRetry
+          ? hearingSupportStatus.lastError ?? 'Live support did not start. Tap the circle to try again.'
+          : 'Hearing support is paused. Tap the circle to turn it on.';
+  const powerIcon = canRetry ? 'refresh' : isRequested ? 'power' : 'power-off';
+  const powerColor = isRunning ? theme.accent : isStarting ? theme.secondary : canRetry ? theme.danger : theme.textMuted;
   const bufferedSeconds = Math.min(
     Math.round(audioBufferStatus.bufferedSeconds),
     Math.round(audioBufferStatus.maxBufferSeconds),
   );
-  const micStatusText = isOn
+  const micStatusText = isRequested
     ? audioBufferStatus.hasRecentInput
       ? `Mic input detected. Buffer: ${bufferedSeconds}s / ${Math.round(audioBufferStatus.maxBufferSeconds)}s.`
       : `Listening is on, but no strong mic input was detected yet. Buffer: ${bufferedSeconds}s / ${Math.round(audioBufferStatus.maxBufferSeconds)}s.`
@@ -101,22 +119,32 @@ function HomePage() {
       <AnimatedEntrance delay={60} style={styles.homeCenterWrap}>
         <View style={styles.homeCenter}>
           <Pressable
-            accessibilityLabel={isOn ? 'Turn hearing support off' : 'Turn hearing support on'}
+            accessibilityLabel={isRunning || isStarting ? 'Turn hearing support off' : canRetry ? 'Retry hearing support' : 'Turn hearing support on'}
             accessibilityRole="button"
+            disabled={isHearingSupportBusy}
             onPress={() => {
               void toggleDeviceEnabled();
             }}
-            style={({ pressed }) => [styles.statusButton, { opacity: pressed ? 0.9 : 1 }]}>
-            <View style={[styles.statusHalo, { backgroundColor: isOn ? theme.accentSoft : theme.elevated }]}> 
-              <View style={[styles.statusCore, { backgroundColor: isOn ? theme.accent : theme.textMuted }]}> 
-                <MaterialCommunityIcons color="#FFFFFF" name={isOn ? 'power' : 'power-off'} size={38} />
+            style={({ pressed }) => [styles.statusButton, { opacity: isHearingSupportBusy ? 0.7 : pressed ? 0.9 : 1 }]}>
+              <View style={[styles.statusHalo, { backgroundColor: isRequested ? theme.accentSoft : theme.elevated }]}>
+                <View style={[styles.statusCore, { backgroundColor: powerColor }]}>
+                  <MaterialCommunityIcons color="#FFFFFF" name={powerIcon} size={38} />
+                </View>
               </View>
-            </View>
           </Pressable>
-          <Text style={[styles.statusText, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>{isOn ? 'On' : 'Off'}</Text>
+          <Text style={[styles.statusText, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>{statusTitle}</Text>
           <Text style={[styles.statusSubtext, { color: theme.textMuted, fontFamily: theme.fonts.body }]}> 
-            {isOn ? 'Hearing support is active. Tap the circle to pause it.' : 'Hearing support is paused. Tap the circle to turn it on.'}
+            {statusDescription}
           </Text>
+          {isRequested && directionalityWarning ? (
+            <SurfaceCard style={styles.warningCard} theme={theme}>
+              <View style={styles.warningHeader}>
+                <Feather color="#C58A12" name="alert-triangle" size={18} />
+                <Text style={[styles.warningTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{directionalityWarning.title}</Text>
+              </View>
+              <Text style={[styles.warningText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{directionalityWarning.description}</Text>
+            </SurfaceCard>
+          ) : null}
           <Text style={[styles.micStatusText, { color: audioBufferStatus.hasRecentInput ? theme.accent : theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>
             {micStatusText}
           </Text>
@@ -124,6 +152,26 @@ function HomePage() {
       </AnimatedEntrance>
     </View>
   );
+}
+
+function getDirectionalityWarning(hearingSupportStatus: ReturnType<typeof useAppState>['hearingSupportStatus']) {
+  const output = hearingSupportStatus.selectedOutput;
+
+  if (!output || !hearingSupportStatus.usingSharedInput) {
+    return null;
+  }
+
+  if (output.isBluetooth) {
+    return {
+      title: 'Single Bluetooth microphone',
+      description: 'These Bluetooth earphones are only exposing one microphone, so directionality is reduced.',
+    };
+  }
+
+  return {
+    title: 'Single microphone mode',
+    description: 'Non-Bluetooth earphones fall back to one microphone, so directionality is reduced. Two-microphone directional mode is only available on supported Bluetooth earphones.',
+  };
 }
 
 function RecapsPage({ onOpenAI }: { onOpenAI: () => void }) {
@@ -331,7 +379,56 @@ function AIPage({ onOpenRecaps }: { onOpenRecaps: () => void }) {
 }
 
 function SettingsPage() {
-  const { clearLocalEarTestData, logout, preferences, retakeEarTest, setThemeMode, theme } = useAppState();
+  const {
+    clearLocalEarTestData,
+    hearingSupportStatus,
+    isHearingSupportBusy,
+    logout,
+    preferences,
+    retakeEarTest,
+    setPreferredInputDevice,
+    setPreferredOutputDevice,
+    setThemeMode,
+    theme,
+  } = useAppState();
+  const [expandedSelector, setExpandedSelector] = useState<'input' | 'output' | null>(null);
+
+  const inputOptions = useMemo(
+    () => [
+      {
+        id: null,
+        label: 'Automatic',
+        description: 'Prioritize headset microphones first and keep phone microphones last.',
+      },
+      ...(hearingSupportStatus.availableInputs ?? []).map((device) => ({
+        id: device.id,
+        label: device.name,
+        description: describeDevice(device),
+      })),
+    ],
+    [hearingSupportStatus.availableInputs],
+  );
+
+  const outputOptions = useMemo(
+    () => [
+      {
+        id: null,
+        label: 'Automatic',
+        description: 'Pick the fastest safe headphone route that is connected right now.',
+      },
+      ...(hearingSupportStatus.availableOutputs ?? []).map((device) => ({
+        id: device.id,
+        label: device.name,
+        description: describeDevice(device),
+      })),
+    ],
+    [hearingSupportStatus.availableOutputs],
+  );
+
+  const selectedInputLabel =
+    inputOptions.find((option) => option.id === preferences.preferredInputId)?.label ?? 'Automatic';
+  const selectedOutputLabel =
+    outputOptions.find((option) => option.id === preferences.preferredOutputId)?.label ?? 'Automatic';
 
   const confirmLogout = () => {
     Alert.alert('Sign out?', 'You will need to sign in again next time.', [
@@ -379,6 +476,41 @@ function SettingsPage() {
 
       <AnimatedEntrance delay={120}>
         <SurfaceCard style={styles.settingsCard} theme={theme}>
+          <Text style={[styles.settingsTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>Audio route</Text>
+          <DeviceSelector
+            disabled={isHearingSupportBusy}
+            expanded={expandedSelector === 'input'}
+            label="Input"
+            onSelect={(deviceId) => {
+              setExpandedSelector(null);
+              void setPreferredInputDevice(deviceId);
+            }}
+            onToggle={() => setExpandedSelector((current) => (current === 'input' ? null : 'input'))}
+            options={inputOptions}
+            selectedId={preferences.preferredInputId}
+            selectedLabel={selectedInputLabel}
+            theme={theme}
+          />
+          <DeviceSelector
+            disabled={isHearingSupportBusy}
+            expanded={expandedSelector === 'output'}
+            label="Output"
+            onSelect={(deviceId) => {
+              setExpandedSelector(null);
+              void setPreferredOutputDevice(deviceId);
+            }}
+            onToggle={() => setExpandedSelector((current) => (current === 'output' ? null : 'output'))}
+            options={outputOptions}
+            selectedId={preferences.preferredOutputId}
+            selectedLabel={selectedOutputLabel}
+            theme={theme}
+          />
+          <Text style={[styles.settingsHint, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>Automatic keeps phone microphones as the fallback path and prefers the fastest connected headset route first.</Text>
+        </SurfaceCard>
+      </AnimatedEntrance>
+
+      <AnimatedEntrance delay={180}>
+        <SurfaceCard style={styles.settingsCard} theme={theme}>
           <SettingsRow label="Retake ear test" onPress={retakeEarTest} theme={theme} />
           <SettingsRow danger label="Clear local ear test data" onPress={confirmClearLocalEarTestData} theme={theme} />
           <SettingsRow danger label="Sign out" onPress={confirmLogout} theme={theme} />
@@ -422,6 +554,92 @@ function ThemeButton({
       </Text>
     </Pressable>
   );
+}
+
+function DeviceSelector({
+  disabled,
+  expanded,
+  label,
+  onSelect,
+  onToggle,
+  options,
+  selectedId,
+  selectedLabel,
+  theme,
+}: {
+  disabled: boolean;
+  expanded: boolean;
+  label: string;
+  onSelect: (deviceId: number | null) => void;
+  onToggle: () => void;
+  options: Array<{ id: number | null; label: string; description: string }>;
+  selectedId: number | null;
+  selectedLabel: string;
+  theme: ReturnType<typeof useAppState>['theme'];
+}) {
+  return (
+    <View style={styles.selectorGroup}>
+      <Text style={[styles.selectorLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>{label}</Text>
+      <Pressable
+        disabled={disabled}
+        onPress={onToggle}
+        style={({ pressed }) => [
+          styles.selectorTrigger,
+          {
+            backgroundColor: theme.elevated,
+            borderColor: theme.border,
+            opacity: disabled ? 0.55 : pressed ? 0.86 : 1,
+          },
+        ]}>
+        <Text style={[styles.selectorValue, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{selectedLabel}</Text>
+        <Feather color={theme.textMuted} name={expanded ? 'chevron-up' : 'chevron-down'} size={18} />
+      </Pressable>
+
+      {expanded ? (
+        <View
+          style={[styles.selectorOptions, { backgroundColor: theme.card, borderColor: theme.border }]}
+        >
+          {options.map((option) => {
+            const active = option.id === selectedId;
+
+            return (
+              <Pressable
+                key={`${label}-${option.id ?? 'auto'}`}
+                onPress={() => onSelect(option.id)}
+                style={({ pressed }) => [
+                  styles.selectorOption,
+                  {
+                    backgroundColor: active ? theme.accentSoft : 'transparent',
+                    opacity: pressed ? 0.84 : 1,
+                  },
+                ]}>
+                <View style={styles.selectorOptionBody}>
+                  <Text
+                    style={[
+                      styles.selectorOptionTitle,
+                      {
+                        color: active ? theme.accent : theme.text,
+                        fontFamily: active ? theme.fonts.bodySemiBold : theme.fonts.bodyMedium,
+                      },
+                    ]}>
+                    {option.label}
+                  </Text>
+                  <Text style={[styles.selectorOptionMeta, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{option.description}</Text>
+                </View>
+                {active ? <Feather color={theme.accent} name="check" size={16} /> : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function describeDevice(device: AudioDeviceSummary): string {
+  const captureLabel = device.channelCounts.some((count) => count >= 2) ? '2-channel' : 'shared input';
+  const sampleRate = device.sampleRates[0];
+  return sampleRate ? `${device.typeLabel} - ${captureLabel} - ${(sampleRate / 1000).toFixed(1)} kHz` : `${device.typeLabel} - ${captureLabel}`;
 }
 
 function SettingsRow({
@@ -498,6 +716,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 16,
     paddingBottom: 12,
+  },
+  warningCard: {
+    width: '100%',
+    maxWidth: 340,
+    gap: 8,
+    padding: 16,
+  },
+  warningHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  warningTitle: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  warningText: {
+    fontSize: 13,
+    lineHeight: 19,
   },
   statusButton: {
     borderRadius: 999,
@@ -651,6 +889,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 20,
   },
+  settingsHint: {
+    fontSize: 13,
+    lineHeight: 20,
+  },
   themeSwitch: {
     flexDirection: 'row',
     gap: 4,
@@ -667,6 +909,53 @@ const styles = StyleSheet.create({
   },
   themeButtonText: {
     fontSize: 14,
+    lineHeight: 18,
+  },
+  selectorGroup: {
+    gap: 8,
+  },
+  selectorLabel: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  selectorTrigger: {
+    minHeight: 54,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  selectorValue: {
+    flex: 1,
+    fontSize: 15,
+    lineHeight: 20,
+  },
+  selectorOptions: {
+    borderRadius: 18,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  selectorOption: {
+    minHeight: 60,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  selectorOptionBody: {
+    flex: 1,
+    gap: 2,
+  },
+  selectorOptionTitle: {
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  selectorOptionMeta: {
+    fontSize: 12,
     lineHeight: 18,
   },
   settingsRow: {

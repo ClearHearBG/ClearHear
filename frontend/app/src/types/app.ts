@@ -15,6 +15,8 @@ export interface AppPreferences {
   themeMode: ThemeMode;
   isDeviceEnabled: boolean;
   autoTranscribe: boolean;
+  preferredInputId: number | null;
+  preferredOutputId: number | null;
 }
 
 export interface TranscriptRecord {
@@ -60,10 +62,16 @@ export interface HearingSummary {
   clarityScore: number;
 }
 
+export interface HearingCalibration {
+  baseGainDb: number;
+  boostMultiplier: number;
+}
+
 export interface HearingProfile {
   id: string;
   testedAt: string;
   points: HearingPoint[];
+  calibration: HearingCalibration;
   leftSummary: HearingSummary;
   rightSummary: HearingSummary;
   overallScore: number;

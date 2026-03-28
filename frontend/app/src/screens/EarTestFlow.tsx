@@ -1,110 +1,121 @@
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Animated, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HearingResultsChart } from '@/src/components/HearingResultsChart';
 import { ActionButton, Atmosphere, Pill, SurfaceCard } from '@/src/components/primitives';
 import { RAMPED_TONE_DURATION_MS, playRampedTone, prepareTonePlayer, stopTonePlayback } from '@/src/services/tonePlayer';
 import { useAppState } from '@/src/state/AppProvider';
-import type { HearingPoint, HearingSummary } from '@/src/types/app';
-import { formatRange } from '@/src/utils/format';
+import type { HearingCalibration, HearingPoint, HearingSummary } from '@/src/types/app';
+import { formatFrequency, formatRange } from '@/src/utils/format';
 import {
-  ANCHOR_TEST_FREQUENCY,
+  DEFAULT_HEARING_CALIBRATION,
+  EAR_TEST_FREQUENCIES,
+  TEST_EAR_ORDER,
   buildHearingProfile,
   createHearingPoint,
   describeEarSupport,
-  getStartingThreshold,
-  MAX_TEST_FREQUENCY,
-  MIN_TEST_FREQUENCY,
-  nextFrequencyCandidate,
-  TEST_EAR_ORDER,
-  TEST_SEARCH_ROUNDS,
+  getFrequencyVolumeProfile,
+  getThresholdAtProgress,
+  getVolumeLevelAtProgress,
+  normalizeHearingCalibration,
 } from '@/src/utils/hearing';
 
-type EarTestStage = 'welcome' | 'guide' | 'testing' | 'review';
-type SearchPhase = 'anchor' | 'low' | 'high';
+type EarTestStage = 'welcome' | 'guide' | 'testing' | 'calibration' | 'review';
 
-interface EarSearchState {
+interface EarTestState {
   earIndex: number;
-  highMax: number;
-  highMin: number;
-  highRounds: number;
-  lowMax: number;
-  lowMin: number;
-  lowRounds: number;
-  phase: SearchPhase;
+  frequencyIndex: number;
 }
 
 const ATTEMPT_DURATION_MS = RAMPED_TONE_DURATION_MS;
+const VOLUME_METER_SEGMENTS = 8;
 
-function createEarSearchState(earIndex = 0): EarSearchState {
+function createEarTestState(earIndex = 0): EarTestState {
   return {
     earIndex,
-    highMax: MAX_TEST_FREQUENCY,
-    highMin: ANCHOR_TEST_FREQUENCY,
-    highRounds: 0,
-    lowMax: ANCHOR_TEST_FREQUENCY,
-    lowMin: MIN_TEST_FREQUENCY,
-    lowRounds: 0,
-    phase: 'anchor',
+    frequencyIndex: 0,
   };
 }
 
-function phaseTitle(phase: SearchPhase): string {
-  if (phase === 'low') {
-    return 'Lower sounds';
-  }
-
-  if (phase === 'high') {
-    return 'Higher sounds';
-  }
-
-  return 'Starting point';
-}
-
 export function EarTestFlow() {
-  const { completeEarTest, isSavingProfile, theme } = useAppState();
+  const {
+    canCancelEarTest,
+    cancelEarTest,
+    completeEarTest,
+    hearingProfile,
+    hearingSupportStatus,
+    isHearingSupportBusy,
+    isSavingProfile,
+    previewHearingSupport,
+    stopPreviewHearingSupport,
+    theme,
+  } = useAppState();
   const [stage, setStage] = useState<EarTestStage>('welcome');
   const [measurements, setMeasurements] = useState<HearingPoint[]>([]);
-  const [searchState, setSearchState] = useState<EarSearchState>(() => createEarSearchState());
+  const [testState, setTestState] = useState<EarTestState>(() => createEarTestState());
   const [isToneActive, setIsToneActive] = useState(false);
+  const [attemptProgressValue, setAttemptProgressValue] = useState(0);
+  const [calibration, setCalibration] = useState<HearingCalibration>(() => normalizeHearingCalibration(hearingProfile?.calibration ?? DEFAULT_HEARING_CALIBRATION));
   const modalOpacity = useRef(new Animated.Value(0)).current;
   const modalTranslate = useRef(new Animated.Value(20)).current;
   const playbackProgress = useRef(new Animated.Value(0)).current;
   const pulseScale = useRef(new Animated.Value(1)).current;
   const pulseOpacity = useRef(new Animated.Value(0.18)).current;
   const attemptResolved = useRef(false);
+  const attemptProgressRef = useRef(0);
+  const activeAttemptKey = useRef(0);
   const pulseLoop = useRef<Animated.CompositeAnimation | null>(null);
 
-  const currentEar = TEST_EAR_ORDER[searchState.earIndex];
-  const currentFrequency =
-    searchState.phase === 'anchor'
-      ? ANCHOR_TEST_FREQUENCY
-      : searchState.phase === 'low'
-        ? nextFrequencyCandidate(searchState.lowMin, searchState.lowMax)
-        : nextFrequencyCandidate(searchState.highMin, searchState.highMax);
-  const currentThreshold = getStartingThreshold(currentFrequency);
+  const currentEar = TEST_EAR_ORDER[testState.earIndex];
+  const currentFrequency = EAR_TEST_FREQUENCIES[testState.frequencyIndex];
+  const currentVolumeProfile = useMemo(() => getFrequencyVolumeProfile(currentFrequency), [currentFrequency]);
   const draftProfile = useMemo(
-    () => (stage === 'review' ? buildHearingProfile(measurements) : null),
-    [measurements, stage],
+    () => (stage === 'calibration' || stage === 'review' ? buildHearingProfile(measurements, calibration) : null),
+    [calibration, measurements, stage],
   );
-  const attemptIndex =
-    searchState.earIndex * (1 + TEST_SEARCH_ROUNDS * 2) +
-    (searchState.phase === 'anchor'
-      ? 0
-      : searchState.phase === 'low'
-        ? 1 + searchState.lowRounds
-        : 1 + TEST_SEARCH_ROUNDS + searchState.highRounds);
-  const totalAttempts = TEST_EAR_ORDER.length * (1 + TEST_SEARCH_ROUNDS * 2);
+  const attemptIndex = testState.earIndex * EAR_TEST_FREQUENCIES.length + testState.frequencyIndex;
+  const totalAttempts = TEST_EAR_ORDER.length * EAR_TEST_FREQUENCIES.length;
   const progressWidth = playbackProgress.interpolate({
     inputRange: [0, 1],
     outputRange: ['0%', '100%'],
   });
+  const volumeRingScale = playbackProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.84, 1.18],
+  });
+  const volumeRingOpacity = playbackProgress.interpolate({
+    inputRange: [0, 0.45, 1],
+    outputRange: [0.1, 0.18, 0.28],
+  });
+  const liveVolumeLevel = stage === 'testing' && isToneActive ? getVolumeLevelAtProgress(currentFrequency, attemptProgressValue) : 0;
+  const volumeMeterFill = useMemo(
+    () =>
+      Array.from({ length: VOLUME_METER_SEGMENTS }, (_, index) =>
+        Math.max(0, Math.min(1, attemptProgressValue * VOLUME_METER_SEGMENTS - index)),
+      ),
+    [attemptProgressValue],
+  );
 
   useEffect(() => {
     void prepareTonePlayer();
   }, []);
+
+  useEffect(() => {
+    setCalibration(normalizeHearingCalibration(hearingProfile?.calibration ?? DEFAULT_HEARING_CALIBRATION));
+  }, [hearingProfile]);
+
+  useEffect(() => {
+    const listenerId = playbackProgress.addListener(({ value }) => {
+      attemptProgressRef.current = value;
+      setAttemptProgressValue(value);
+    });
+
+    return () => {
+      playbackProgress.removeListener(listenerId);
+    };
+  }, [playbackProgress]);
 
   useEffect(() => {
     if (stage !== 'welcome' && stage !== 'guide') {
@@ -171,93 +182,59 @@ export function EarTestFlow() {
     animation.start();
   }, [pulseOpacity, pulseScale, stopPulse]);
 
-  const advanceToNextEar = useCallback(() => {
-    if (searchState.earIndex >= TEST_EAR_ORDER.length - 1) {
-      setStage('review');
+  const advanceToNextAttempt = useCallback(() => {
+    if (testState.frequencyIndex >= EAR_TEST_FREQUENCIES.length - 1) {
+      if (testState.earIndex >= TEST_EAR_ORDER.length - 1) {
+        setStage('calibration');
+        return;
+      }
+
+      setTestState(createEarTestState(testState.earIndex + 1));
       return;
     }
 
-    setSearchState(createEarSearchState(searchState.earIndex + 1));
-  }, [searchState.earIndex]);
+    setTestState((current) => ({
+      ...current,
+      frequencyIndex: current.frequencyIndex + 1,
+    }));
+  }, [testState.earIndex, testState.frequencyIndex]);
 
   const finishAttempt = useCallback(
     (heard: boolean) => {
+      const threshold = heard
+        ? getThresholdAtProgress(currentFrequency, attemptProgressRef.current)
+        : currentVolumeProfile.endThreshold;
+
       const point = createHearingPoint({
         ear: currentEar,
         frequency: currentFrequency,
         heard,
-        threshold: currentThreshold,
+        threshold,
       });
 
       setMeasurements((current) => [...current, point]);
-
-      if (searchState.phase === 'anchor') {
-        if (!heard) {
-          advanceToNextEar();
-          return;
-        }
-
-        setSearchState((current) => ({
-          ...current,
-          phase: 'low',
-        }));
-        return;
-      }
-
-      if (searchState.phase === 'low') {
-        const nextLowMin = heard ? searchState.lowMin : currentFrequency;
-        const nextLowMax = heard ? currentFrequency : searchState.lowMax;
-        const nextLowRounds = searchState.lowRounds + 1;
-
-        if (nextLowRounds >= TEST_SEARCH_ROUNDS) {
-          setSearchState((current) => ({
-            ...current,
-            lowMax: nextLowMax,
-            lowMin: nextLowMin,
-            lowRounds: nextLowRounds,
-            phase: 'high',
-          }));
-          return;
-        }
-
-        setSearchState((current) => ({
-          ...current,
-          lowMax: nextLowMax,
-          lowMin: nextLowMin,
-          lowRounds: nextLowRounds,
-        }));
-        return;
-      }
-
-      const nextHighMin = heard ? currentFrequency : searchState.highMin;
-      const nextHighMax = heard ? searchState.highMax : currentFrequency;
-      const nextHighRounds = searchState.highRounds + 1;
-
-      if (nextHighRounds >= TEST_SEARCH_ROUNDS) {
-        advanceToNextEar();
-        return;
-      }
-
-      setSearchState((current) => ({
-        ...current,
-        highMax: nextHighMax,
-        highMin: nextHighMin,
-        highRounds: nextHighRounds,
-      }));
+      advanceToNextAttempt();
     },
-    [advanceToNextEar, currentEar, currentFrequency, currentThreshold, searchState],
+    [advanceToNextAttempt, currentEar, currentFrequency, currentVolumeProfile.endThreshold],
   );
 
   useEffect(() => {
     if (stage !== 'testing') {
+      activeAttemptKey.current += 1;
       void stopTonePlayback();
       stopPulse();
+      attemptProgressRef.current = 0;
+      setAttemptProgressValue(0);
       playbackProgress.setValue(0);
       setIsToneActive(false);
       return;
     }
 
     attemptResolved.current = false;
+    const attemptKey = activeAttemptKey.current + 1;
+    activeAttemptKey.current = attemptKey;
+    attemptProgressRef.current = 0;
+    setAttemptProgressValue(0);
     playbackProgress.setValue(0);
     startPulse();
     setIsToneActive(true);
@@ -271,9 +248,10 @@ export function EarTestFlow() {
     void playRampedTone({
       ear: currentEar,
       frequency: currentFrequency,
-      threshold: currentThreshold,
     }).finally(() => {
-      setIsToneActive(false);
+      if (activeAttemptKey.current === attemptKey) {
+        setIsToneActive(false);
+      }
     });
 
     const timeout = setTimeout(() => {
@@ -286,14 +264,17 @@ export function EarTestFlow() {
     }, ATTEMPT_DURATION_MS);
 
     return () => {
+      activeAttemptKey.current += 1;
       clearTimeout(timeout);
       void stopTonePlayback();
       stopPulse();
       playbackProgress.stopAnimation();
+      attemptProgressRef.current = 0;
+      setAttemptProgressValue(0);
       playbackProgress.setValue(0);
       setIsToneActive(false);
     };
-  }, [currentEar, currentFrequency, currentThreshold, finishAttempt, playbackProgress, stage, startPulse, stopPulse]);
+  }, [currentEar, currentFrequency, finishAttempt, playbackProgress, stage, startPulse, stopPulse]);
 
   const handleHearTone = () => {
     if (stage !== 'testing' || attemptResolved.current) {
@@ -301,6 +282,7 @@ export function EarTestFlow() {
     }
 
     attemptResolved.current = true;
+    setIsToneActive(false);
     void stopTonePlayback();
     stopPulse();
     finishAttempt(true);
@@ -308,8 +290,31 @@ export function EarTestFlow() {
 
   const beginTest = () => {
     setMeasurements([]);
-    setSearchState(createEarSearchState());
+    setTestState(createEarTestState());
+    setCalibration(normalizeHearingCalibration(hearingProfile?.calibration ?? DEFAULT_HEARING_CALIBRATION));
+    attemptProgressRef.current = 0;
+    setAttemptProgressValue(0);
     setStage('testing');
+  };
+
+  useEffect(() => {
+    if (stage !== 'calibration' || !draftProfile) {
+      void stopPreviewHearingSupport();
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      void previewHearingSupport(draftProfile);
+    }, 180);
+
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, [draftProfile, previewHearingSupport, stage, stopPreviewHearingSupport]);
+
+  const handleCalibrationContinue = async () => {
+    await stopPreviewHearingSupport();
+    setStage('review');
   };
 
   const handleSaveProfile = async () => {
@@ -317,11 +322,18 @@ export function EarTestFlow() {
       return;
     }
 
+    await stopPreviewHearingSupport();
     await completeEarTest(draftProfile);
   };
 
+  const handleCancelRetake = () => {
+    void stopTonePlayback();
+    void stopPreviewHearingSupport();
+    cancelEarTest();
+  };
+
   return (
-    <View style={[styles.root, { backgroundColor: theme.background }]}> 
+    <View style={[styles.root, { backgroundColor: theme.background }]}>
       <Atmosphere theme={theme} />
       <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
         {(stage === 'welcome' || stage === 'guide') && <EarTestBackdrop theme={theme} />}
@@ -334,19 +346,21 @@ export function EarTestFlow() {
                   <EarTab active={currentEar === 'left'} label="Left" theme={theme} />
                   <EarTab active={currentEar === 'right'} label="Right" theme={theme} />
                 </View>
-                <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Tap when you hear the sound.</Text>
-                <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{phaseTitle(searchState.phase)}</Text>
+                <Pill accent label={formatFrequency(currentFrequency)} theme={theme} />
+                <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Tap as soon as you hear it.</Text>
+                <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>The tone starts soft and rises while we test each fixed frequency.</Text>
               </View>
 
               <View style={styles.middleWrap}>
                 <Pressable
+                  disabled={!isToneActive}
                   onPress={handleHearTone}
                   style={({ pressed }) => [
                     styles.hearButton,
                     {
                       backgroundColor: theme.card,
                       borderColor: theme.border,
-                      opacity: pressed ? 0.92 : 1,
+                      opacity: !isToneActive ? 0.72 : pressed ? 0.92 : 1,
                     },
                   ]}>
                   <Animated.View
@@ -359,26 +373,72 @@ export function EarTestFlow() {
                       },
                     ]}
                   />
-                  <View style={[styles.hearCore, { backgroundColor: theme.accent }]}> 
+                  <Animated.View
+                    style={[
+                      styles.volumeRing,
+                      {
+                        borderColor: theme.accent,
+                        opacity: volumeRingOpacity,
+                        transform: [{ scale: volumeRingScale }],
+                      },
+                    ]}
+                  />
+                  <View style={[styles.hearCore, { backgroundColor: theme.accent }]}>
                     <MaterialCommunityIcons color="#FFFFFF" name="ear-hearing" size={42} />
                     <View style={styles.sideBadge}>
                       <Text style={[styles.sideBadgeText, { color: theme.accent, fontFamily: theme.fonts.bodyBold }]}>{currentEar === 'left' ? 'L' : 'R'}</Text>
                     </View>
                   </View>
-                  <Text style={[styles.hearButtonText, { color: theme.text, fontFamily: theme.fonts.bodyBold }]}>Tap when you hear it</Text>
+                  <Text style={[styles.hearButtonText, { color: theme.text, fontFamily: theme.fonts.bodyBold }]}>Tap when audible</Text>
                 </Pressable>
               </View>
 
-              <View style={[styles.statusCard, { backgroundColor: theme.card, borderColor: theme.border }]}> 
+              <View style={[styles.statusCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
                 <View style={styles.rowBetween}>
-                  <Text style={[styles.statusLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>
-                    {isToneActive ? 'Listening now' : 'Preparing next sound'}
-                  </Text>
+                  <View style={styles.flex}>
+                    <Text style={[styles.statusLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>
+                      {isToneActive ? 'Volume rising' : 'Preparing next sound'}
+                    </Text>
+                    <Text style={[styles.statusMeta, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>
+                      {formatFrequency(currentFrequency)} - {isToneActive ? `step ${liveVolumeLevel}/${currentVolumeProfile.steps}` : 'starting over'}
+                    </Text>
+                  </View>
                   <Text style={[styles.statusStep, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>
                     {attemptIndex + 1}/{totalAttempts}
                   </Text>
                 </View>
-                <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}> 
+
+                <View style={styles.volumeMeterRow}>
+                  {volumeMeterFill.map((fillAmount, index) => {
+                    const barHeight = 20 + index * 5;
+
+                    return (
+                      <View
+                        key={`meter-${index}`}
+                        style={[
+                          styles.volumeMeterSlot,
+                          {
+                            backgroundColor: theme.progressTrack,
+                            borderColor: theme.border,
+                            height: barHeight,
+                          },
+                        ]}>
+                        <View
+                          style={[
+                            styles.volumeMeterFill,
+                            {
+                              backgroundColor: theme.accent,
+                              height: `${Math.max(fillAmount, 0.08) * 100}%`,
+                              opacity: fillAmount > 0 ? 1 : 0.18,
+                            },
+                          ]}
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+
+                <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}>
                   <Animated.View style={[styles.progressFill, { width: progressWidth, backgroundColor: theme.accent }]} />
                 </View>
               </View>
@@ -386,11 +446,103 @@ export function EarTestFlow() {
           </View>
         ) : null}
 
+        {stage === 'calibration' && draftProfile ? (
+          <ScrollView contentContainerStyle={styles.reviewScroll} showsVerticalScrollIndicator={false}>
+            <View style={styles.headerBlock}>
+              <Pill accent label="Live tuning" theme={theme} />
+              <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Tune the room sound.</Text>
+              <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>Listen to the live room audio through your earphones, then adjust the two sliders until the preview feels natural and comfortable.</Text>
+            </View>
+
+            <SurfaceCard style={styles.calibrationCard} theme={theme}>
+              <View style={styles.rowBetween}>
+                <View style={styles.flex}>
+                  <Text style={[styles.calibrationTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>Live preview</Text>
+                  <Text style={[styles.calibrationText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>Talk, rub your fingers, or snap softly near each earbud mic while you tune.</Text>
+                </View>
+                <Pill
+                  accent={hearingSupportStatus.stage === 'running'}
+                  label={
+                    hearingSupportStatus.stage === 'running'
+                      ? 'Listening now'
+                      : hearingSupportStatus.stage === 'starting'
+                        ? 'Starting'
+                        : hearingSupportStatus.lastError
+                          ? 'Preview issue'
+                          : 'Waiting'
+                  }
+                  theme={theme}
+                />
+              </View>
+
+              <View style={styles.calibrationMetricsRow}>
+                <CalibrationMetric
+                  label="Input"
+                  theme={theme}
+                  value={hearingSupportStatus.selectedInput?.name ?? 'Connecting'}
+                />
+                <CalibrationMetric
+                  label="Output"
+                  theme={theme}
+                  value={hearingSupportStatus.selectedOutput?.name ?? 'Connecting'}
+                />
+              </View>
+
+              {hearingSupportStatus.lastError ? (
+                <Text style={[styles.calibrationWarning, { color: theme.danger, fontFamily: theme.fonts.bodyMedium }]}>{hearingSupportStatus.lastError}</Text>
+              ) : null}
+            </SurfaceCard>
+
+            <SurfaceCard style={styles.calibrationCard} theme={theme}>
+              <TuningSlider
+                helper="Raises all outside sound before your hearing-loss shaping. Increase this if your earbuds block too much of the room."
+                label="Base lift"
+                max={18}
+                min={0}
+                onChange={(value) => setCalibration((current) => ({ ...current, baseGainDb: value }))}
+                step={0.5}
+                theme={theme}
+                value={calibration.baseGainDb}
+                valueFormatter={(value) => `+${value.toFixed(1)} dB`}
+              />
+
+              <TuningSlider
+                helper="Scales how strongly your ear-test profile boosts each side. Increase this if speech still feels too soft."
+                label="Profile strength"
+                max={2.2}
+                min={0.5}
+                onChange={(value) => setCalibration((current) => ({ ...current, boostMultiplier: value }))}
+                step={0.05}
+                theme={theme}
+                value={calibration.boostMultiplier}
+                valueFormatter={(value) => `${value.toFixed(2)}x`}
+              />
+
+              <View style={[styles.calibrationSummary, { backgroundColor: theme.elevated, borderColor: theme.border }]}>
+                <Text style={[styles.calibrationSummaryTitle, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>Current tuning</Text>
+                <Text style={[styles.calibrationSummaryText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>
+                  Base lift {calibration.baseGainDb.toFixed(1)} dB with profile strength at {calibration.boostMultiplier.toFixed(2)}x.
+                </Text>
+              </View>
+            </SurfaceCard>
+
+            <ActionButton
+              disabled={isHearingSupportBusy}
+              label={isHearingSupportBusy ? 'Updating preview...' : 'See results'}
+              onPress={() => {
+                void handleCalibrationContinue();
+              }}
+              theme={theme}
+            />
+          </ScrollView>
+        ) : null}
+
         {stage === 'review' && draftProfile ? (
           <ScrollView contentContainerStyle={styles.reviewScroll} showsVerticalScrollIndicator={false}>
             <View style={styles.headerBlock}>
               <Pill accent label="Ready" theme={theme} />
               <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Your profile is ready.</Text>
+              <Text style={[styles.subtitle, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>These results now include the live tuning you just set for your earphones.</Text>
             </View>
 
             <SurfaceCard style={styles.reviewCard} theme={theme}>
@@ -413,32 +565,35 @@ export function EarTestFlow() {
       </SafeAreaView>
 
       <Modal animationType="none" presentationStyle="overFullScreen" transparent visible={stage === 'welcome' || stage === 'guide'}>
-        <View style={[styles.modalRoot, { backgroundColor: theme.overlay }]}> 
+        <View style={[styles.modalRoot, { backgroundColor: theme.overlay }]}>
           <Animated.View style={[styles.modalWrap, { opacity: modalOpacity, transform: [{ translateY: modalTranslate }] }]}> 
             <SurfaceCard style={styles.modalCard} theme={theme}>
               {stage === 'welcome' ? (
                 <>
+                  <View style={styles.modalTopRow}>
+                    {canCancelEarTest ? <CircleBackButton onPress={handleCancelRetake} theme={theme} /> : <View style={styles.backButtonSpacer} />}
+                  </View>
                   <View style={[styles.modalIcon, { backgroundColor: theme.accentSoft }]}> 
                     <MaterialCommunityIcons color={theme.accent} name="ear-hearing" size={28} />
                   </View>
                   <Text style={[styles.modalTitle, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Ear test</Text>
-                  <Text style={[styles.modalText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>We will play short sounds in each ear to set up your hearing range.</Text>
+                  <Text style={[styles.modalText, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>We will run through a fixed set of tones in each ear and save when you first hear each one.</Text>
                   <ActionButton label="Continue" onPress={() => setStage('guide')} theme={theme} />
                 </>
               ) : null}
 
               {stage === 'guide' ? (
                 <>
+                  <View style={styles.modalTopRow}>
+                    <CircleBackButton onPress={() => setStage('welcome')} theme={theme} />
+                  </View>
                   <Text style={[styles.modalTitle, { color: theme.text, fontFamily: theme.fonts.displayBold }]}>Before you start</Text>
                   <View style={styles.instructionsList}>
                     <Instruction icon="headphones" text="Wear both earbuds or headphones." theme={theme} />
-                    <Instruction icon="volume-2" text="When you hear a sound, tap the button." theme={theme} />
+                    <Instruction icon="volume-2" text="Each tone starts soft and rises. Tap as soon as you hear it." theme={theme} />
                     <Instruction icon="clock" text="If you hear nothing, wait and the test will move on." theme={theme} />
                   </View>
-                  <View style={styles.modalActions}>
-                    <ActionButton label="Back" onPress={() => setStage('welcome')} style={styles.flex} theme={theme} variant="ghost" />
-                    <ActionButton label="Got it" onPress={beginTest} style={styles.flex} theme={theme} />
-                  </View>
+                  <ActionButton label="Got it" onPress={beginTest} theme={theme} />
                 </>
               ) : null}
             </SurfaceCard>
@@ -546,6 +701,136 @@ function ReviewItem({
   );
 }
 
+function CalibrationMetric({
+  label,
+  theme,
+  value,
+}: {
+  label: string;
+  theme: ReturnType<typeof useAppState>['theme'];
+  value: string;
+}) {
+  return (
+    <View style={[styles.calibrationMetric, { backgroundColor: theme.elevated, borderColor: theme.border }]}>
+      <Text style={[styles.calibrationMetricLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>{label}</Text>
+      <Text style={[styles.calibrationMetricValue, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{value}</Text>
+    </View>
+  );
+}
+
+function TuningSlider({
+  helper,
+  label,
+  max,
+  min,
+  onChange,
+  step,
+  theme,
+  value,
+  valueFormatter,
+}: {
+  helper: string;
+  label: string;
+  max: number;
+  min: number;
+  onChange: (value: number) => void;
+  step: number;
+  theme: ReturnType<typeof useAppState>['theme'];
+  value: number;
+  valueFormatter: (value: number) => string;
+}) {
+  const trackWidth = useRef(1);
+
+  const clampValue = useCallback(
+    (nextValue: number) => {
+      const safeValue = Math.max(min, Math.min(max, nextValue));
+      const steppedValue = Math.round((safeValue - min) / step) * step + min;
+      return Number(Math.max(min, Math.min(max, steppedValue)).toFixed(3));
+    },
+    [max, min, step],
+  );
+
+  const updateFromLocation = useCallback(
+    (locationX: number) => {
+      const ratio = Math.max(0, Math.min(1, locationX / Math.max(trackWidth.current, 1)));
+      onChange(clampValue(min + ratio * (max - min)));
+    },
+    [clampValue, max, min, onChange],
+  );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (event) => {
+          updateFromLocation(event.nativeEvent.locationX);
+        },
+        onPanResponderMove: (event) => {
+          updateFromLocation(event.nativeEvent.locationX);
+        },
+        onStartShouldSetPanResponder: () => true,
+      }),
+    [updateFromLocation],
+  );
+
+  const fillRatio = Math.max(0, Math.min(1, (value - min) / (max - min)));
+
+  return (
+    <View style={styles.sliderBlock}>
+      <View style={styles.rowBetween}>
+        <Text style={[styles.sliderLabel, { color: theme.text, fontFamily: theme.fonts.bodySemiBold }]}>{label}</Text>
+        <Text style={[styles.sliderValue, { color: theme.accent, fontFamily: theme.fonts.bodyBold }]}>{valueFormatter(value)}</Text>
+      </View>
+      <Text style={[styles.sliderHelper, { color: theme.textMuted, fontFamily: theme.fonts.body }]}>{helper}</Text>
+      <View
+        onLayout={(event) => {
+          trackWidth.current = event.nativeEvent.layout.width;
+        }}
+        style={[styles.sliderTrack, { backgroundColor: theme.progressTrack, borderColor: theme.border }]}
+        {...panResponder.panHandlers}>
+        <View style={[styles.sliderFill, { width: `${fillRatio * 100}%`, backgroundColor: theme.accent }]} />
+        <View
+          style={[
+            styles.sliderThumb,
+            {
+              backgroundColor: theme.card,
+              borderColor: theme.accent,
+              left: `${fillRatio * 100}%`,
+            },
+          ]}
+        />
+      </View>
+      <View style={styles.sliderRangeRow}>
+        <Text style={[styles.sliderRangeLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>{valueFormatter(min)}</Text>
+        <Text style={[styles.sliderRangeLabel, { color: theme.textMuted, fontFamily: theme.fonts.bodyMedium }]}>{valueFormatter(max)}</Text>
+      </View>
+    </View>
+  );
+}
+
+function CircleBackButton({
+  onPress,
+  theme,
+}: {
+  onPress: () => void;
+  theme: ReturnType<typeof useAppState>['theme'];
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.circleBackButton,
+        {
+          backgroundColor: theme.elevated,
+          borderColor: theme.border,
+          opacity: pressed ? 0.82 : 1,
+        },
+      ]}>
+      <Feather color={theme.text} name="arrow-left" size={18} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -626,6 +911,13 @@ const styles = StyleSheet.create({
     height: 220,
     borderRadius: 999,
   },
+  volumeRing: {
+    position: 'absolute',
+    width: 238,
+    height: 238,
+    borderRadius: 999,
+    borderWidth: 3,
+  },
   hearCore: {
     width: 150,
     height: 150,
@@ -657,7 +949,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     borderWidth: 1,
     padding: 16,
-    gap: 10,
+    gap: 12,
   },
   rowBetween: {
     flexDirection: 'row',
@@ -669,9 +961,30 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
   },
+  statusMeta: {
+    marginTop: 2,
+    fontSize: 13,
+    lineHeight: 18,
+  },
   statusStep: {
     fontSize: 13,
     lineHeight: 18,
+  },
+  volumeMeterRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  volumeMeterSlot: {
+    flex: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    justifyContent: 'flex-end',
+    overflow: 'hidden',
+  },
+  volumeMeterFill: {
+    width: '100%',
+    borderRadius: 999,
   },
   progressTrack: {
     height: 8,
@@ -692,6 +1005,22 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     gap: 18,
+  },
+  modalTopRow: {
+    minHeight: 40,
+    alignSelf: 'stretch',
+  },
+  backButtonSpacer: {
+    width: 40,
+    height: 40,
+  },
+  circleBackButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalIcon: {
     width: 56,
@@ -732,10 +1061,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
-  modalActions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
   previewCircle: {
     width: 160,
     height: 160,
@@ -743,6 +1068,102 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  calibrationCard: {
+    gap: 16,
+  },
+  calibrationTitle: {
+    fontSize: 17,
+    lineHeight: 22,
+  },
+  calibrationText: {
+    marginTop: 4,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  calibrationMetricsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  calibrationMetric: {
+    minWidth: 120,
+    flex: 1,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 2,
+  },
+  calibrationMetricLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  calibrationMetricValue: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  calibrationWarning: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  calibrationSummary: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  calibrationSummaryTitle: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  calibrationSummaryText: {
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  sliderBlock: {
+    gap: 10,
+  },
+  sliderLabel: {
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  sliderValue: {
+    fontSize: 15,
+    lineHeight: 20,
+  },
+  sliderHelper: {
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  sliderTrack: {
+    height: 18,
+    borderRadius: 999,
+    borderWidth: 1,
+    justifyContent: 'center',
+  },
+  sliderFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  sliderThumb: {
+    position: 'absolute',
+    top: -4,
+    width: 26,
+    height: 26,
+    marginLeft: -13,
+    borderRadius: 999,
+    borderWidth: 3,
+  },
+  sliderRangeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  sliderRangeLabel: {
+    fontSize: 12,
+    lineHeight: 16,
   },
   reviewCard: {
     gap: 12,

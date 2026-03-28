@@ -1,27 +1,95 @@
-import type { EarSide, HearingPoint, HearingProfile, HearingSummary } from '@/src/types/app';
+import type { EarSide, HearingCalibration, HearingPoint, HearingProfile, HearingSummary } from '@/src/types/app';
 
-export const MIN_TEST_FREQUENCY = 20;
-export const MAX_TEST_FREQUENCY = 20000;
-export const ANCHOR_TEST_FREQUENCY = 1000;
+export const EAR_TEST_FREQUENCIES = [63, 80, 100, 125, 180, 250, 350, 500, 700, 1000, 1400, 2000, 2800, 4000, 5600, 8000, 11000, 14000, 16000] as const;
+export const MIN_TEST_FREQUENCY = EAR_TEST_FREQUENCIES[0];
+export const MAX_TEST_FREQUENCY = EAR_TEST_FREQUENCIES[EAR_TEST_FREQUENCIES.length - 1];
 export const TEST_EAR_ORDER: EarSide[] = ['left', 'right'];
-export const TEST_SEARCH_ROUNDS = 5;
-export const TEST_SEARCH_MIN = 6;
-export const TEST_SEARCH_MAX = 64;
+export const TEST_THRESHOLD_MIN = 4;
+export const TEST_THRESHOLD_MAX = 64;
+const MAX_HEARD_LOSS_DB = 72;
+export const DEFAULT_HEARING_CALIBRATION: HearingCalibration = {
+  baseGainDb: 6,
+  boostMultiplier: 1,
+};
 
-export function nextFrequencyCandidate(low: number, high: number): number {
-  return Math.round(Math.sqrt(low * high));
+interface FrequencyVolumeProfile {
+  startThreshold: number;
+  endThreshold: number;
+  steps: number;
 }
 
-export function getStartingThreshold(frequency: number): number {
-  if (frequency <= 80 || frequency >= 12000) {
-    return 44;
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+export function getFrequencyVolumeProfile(frequency: number): FrequencyVolumeProfile {
+  if (frequency <= 80) {
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: TEST_THRESHOLD_MAX, steps: 4 };
   }
 
-  if (frequency <= 250 || frequency >= 8000) {
-    return 38;
+  if (frequency <= 125) {
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: TEST_THRESHOLD_MAX, steps: 5 };
   }
 
-  return 32;
+  if (frequency <= 350) {
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: TEST_THRESHOLD_MAX, steps: 6 };
+  }
+
+  if (frequency <= 1400) {
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 56, steps: 8 };
+  }
+
+  if (frequency <= 4000) {
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 48, steps: 10 };
+  }
+
+  if (frequency <= 8000) {
+    return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 44, steps: 11 };
+  }
+
+  return { startThreshold: TEST_THRESHOLD_MIN, endThreshold: 40, steps: 12 };
+}
+
+function getThresholdSpan(profile: FrequencyVolumeProfile): number {
+  return Math.max(1, profile.endThreshold - profile.startThreshold);
+}
+
+function getEasedRampProgress(progress: number): number {
+  const safeProgress = clamp(progress, 0, 1);
+
+  return safeProgress ** 1.85;
+}
+
+function interpolateThreshold(profile: FrequencyVolumeProfile, progress: number): number {
+  const safeProgress = getEasedRampProgress(progress);
+  const thresholdSpan = getThresholdSpan(profile);
+  const scaledProgress = safeProgress * profile.steps;
+  const stepIndex = Math.min(profile.steps - 1, Math.floor(scaledProgress));
+  const stepSize = thresholdSpan / profile.steps;
+  const currentStepStart = stepIndex / profile.steps;
+  const nextStepStart = Math.min(1, (stepIndex + 1) / profile.steps);
+  const localProgress = nextStepStart > currentStepStart ? (safeProgress - currentStepStart) / (nextStepStart - currentStepStart) : 0;
+  const thresholdStart = profile.startThreshold + stepIndex * stepSize;
+  const thresholdEnd = profile.startThreshold + Math.min(profile.steps, stepIndex + 1) * stepSize;
+
+  return thresholdStart + (thresholdEnd - thresholdStart) * localProgress;
+}
+
+export function getThresholdAtProgress(frequency: number, progress: number): number {
+  const profile = getFrequencyVolumeProfile(frequency);
+
+  return Math.round(interpolateThreshold(profile, progress));
+}
+
+export function getVolumeLevelAtProgress(frequency: number, progress: number): number {
+  const profile = getFrequencyVolumeProfile(frequency);
+  const safeProgress = getEasedRampProgress(progress);
+
+  if (safeProgress <= 0) {
+    return 1;
+  }
+
+  return Math.min(profile.steps, Math.ceil(safeProgress * profile.steps));
 }
 
 export function createHearingPoint({
@@ -35,15 +103,17 @@ export function createHearingPoint({
   threshold: number;
   heard: boolean;
 }): HearingPoint {
-  const normalizedThreshold = Math.max(TEST_SEARCH_MIN, Math.min(TEST_SEARCH_MAX, Math.round(threshold)));
-  const lossDb = heard ? Math.max(0, Math.round((normalizedThreshold - TEST_SEARCH_MIN) * 1.2)) : 80;
+  const profile = getFrequencyVolumeProfile(frequency);
+  const normalizedThreshold = clamp(Math.round(threshold), TEST_THRESHOLD_MIN, TEST_THRESHOLD_MAX);
+  const thresholdRatio = clamp((normalizedThreshold - profile.startThreshold) / getThresholdSpan(profile), 0, 1);
+  const lossDb = heard ? Math.round(thresholdRatio * MAX_HEARD_LOSS_DB) : 80;
 
   return {
     ear,
     frequency,
     threshold: normalizedThreshold,
     lossDb,
-    comfort: normalizedThreshold <= 22 ? 'soft' : normalizedThreshold <= 42 ? 'medium' : 'high',
+    comfort: thresholdRatio <= 0.34 ? 'soft' : thresholdRatio <= 0.67 ? 'medium' : 'high',
     heard,
   };
 }
@@ -63,7 +133,10 @@ function summarizeEar(points: HearingPoint[]): HearingSummary {
   };
 }
 
-export function buildHearingProfile(points: HearingPoint[]): HearingProfile {
+export function buildHearingProfile(
+  points: HearingPoint[],
+  calibration: HearingCalibration = DEFAULT_HEARING_CALIBRATION,
+): HearingProfile {
   const leftPoints = points.filter((point) => point.ear === 'left');
   const rightPoints = points.filter((point) => point.ear === 'right');
   const leftSummary = summarizeEar(leftPoints);
@@ -73,9 +146,36 @@ export function buildHearingProfile(points: HearingPoint[]): HearingProfile {
     id: `hearing-${Date.now()}`,
     testedAt: new Date().toISOString(),
     points,
+    calibration,
     leftSummary,
     rightSummary,
     overallScore: Math.round((leftSummary.clarityScore + rightSummary.clarityScore) / 2),
+  };
+}
+
+export function normalizeHearingCalibration(
+  calibration?: Partial<HearingCalibration> | null,
+): HearingCalibration {
+  return {
+    baseGainDb:
+      typeof calibration?.baseGainDb === 'number' && Number.isFinite(calibration.baseGainDb)
+        ? Math.max(0, Math.min(18, calibration.baseGainDb))
+        : DEFAULT_HEARING_CALIBRATION.baseGainDb,
+    boostMultiplier:
+      typeof calibration?.boostMultiplier === 'number' && Number.isFinite(calibration.boostMultiplier)
+        ? Math.max(0.5, Math.min(2.2, calibration.boostMultiplier))
+        : DEFAULT_HEARING_CALIBRATION.boostMultiplier,
+  };
+}
+
+export function normalizeHearingProfile(profile: HearingProfile | null | undefined): HearingProfile | null {
+  if (!profile) {
+    return null;
+  }
+
+  return {
+    ...profile,
+    calibration: normalizeHearingCalibration(profile.calibration),
   };
 }
 
@@ -84,7 +184,7 @@ export function describeEarSupport(summary: HearingSummary): string {
     return 'Needs stronger support across the range.';
   }
 
-  if (summary.lowRangeHz !== null && summary.lowRangeHz > 120) {
+  if (summary.lowRangeHz !== null && summary.lowRangeHz > 125) {
     return 'Very low sounds may need extra lift.';
   }
 

@@ -7,7 +7,7 @@
 	"license": "UNLICENSED",
 	"scripts": {
 		"build": "nest build",
-		"format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+		"format": "prettier --write \"src/**/*.ts\"",
 		"lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix --cache .",
 		"start": "nest start",
 		"start:dev": "nest start --watch",
@@ -27,6 +27,7 @@
 		"class-validator": "^0.15.1",
 		"groq-sdk": "^1.1.2",
 		"joi": "^18.0.2",
+		"openai": "^6.33.0",
 		"pg": "^8.20.0",
 		"reflect-metadata": "^0.2.2",
 		"rxjs": "^7.8.1"
